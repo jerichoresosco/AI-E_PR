@@ -55,11 +55,11 @@ def test_power_law_sampling():
     norm_const = (-par) / (max_val**(-par) - min_val**(-par))
     p_theory = norm_const * r_theory**(-1-par)
 
-    plt.plot(r_theory, p_theory, 'r-', linewidth=2, label='Teorical p(x)')
+    plt.plot(r_theory, p_theory, 'r-', linewidth=2, label='Theoretical p(x)')
     plt.hist(samples, bins=90, density=True, alpha=0.5, label='Samples')
     plt.xlabel('x')
     plt.ylabel('p(x)')
-    plt.title('Theorical vs Samples')
+    plt.title('Theoretical vs Samples')
     plt.yscale('log')
     plt.xscale('log')
     plt.legend()
@@ -67,12 +67,6 @@ def test_power_law_sampling():
     plt.tight_layout()
 
     filepath_save_plot(folder="test_plots")
-
-    #These lines save the testplot on the specific folder
-    #base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    #plots_dir = os.path.join(base_dir, "test_plots")
-    #filepath = os.path.join(plots_dir, "test_plot.pdf")
-    #plt.savefig(filepath)
 
     plt.close()
 
