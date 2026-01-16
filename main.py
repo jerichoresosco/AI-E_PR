@@ -1,10 +1,11 @@
 import logging
+from model.simulation import Simulation
 
 logger = logging.getLogger(__name__)
-from model.utils import spatial_power_law_sampling
 
 def main():
-    spatial_power_law_sampling()
+    simulation = Simulation(ro = 0.6, gamma = 0.21, time=5*17*3600)
+    simulation.run()
 
 if __name__ =='__main__':
 
