@@ -1,5 +1,6 @@
 import numpy as np
 from model.user import User
+from pprint import pprint
 
 import logging
 logger = logging.getLogger(__name__)
@@ -13,8 +14,11 @@ class Simulation:
 
     def run(self):
         user = User(uid = "Pippo", simulation = self)
-        print(user.uid)
+        user.first_exploration()
         while user.clock < self.time:
             user.make_decision()
+        pprint(user.user_history)
+        pprint(user.venue_history)
+
 
         

@@ -30,10 +30,10 @@ def power_law_sampling( par, min_val, max_val, n_samples):
         power law distribution
     """
 
-    logger.info(
-        f"Generating {n_samples} samples from power-law "
-        f"distribution (par={par}, min_val={min_val}, max_val={max_val})"
-    )
+    #logger.info(
+    #    f"Generating {n_samples} samples from power-law "
+    #    f"distribution (par={par}, min_val={min_val}, max_val={max_val})"
+    #)
 
 
     u = np.random.uniform(0, 1, n_samples)
@@ -70,7 +70,7 @@ def spatial_power_law_sampling( par = 0.55, min_val = 5, max_val = 100000, n_sam
         Array of shape (n_samples,) containing the sampled distances from 
         the power law distribution p(r) ∝ r^(-1-par) 
     """
-    logger.info("Spatial sampling...")
+    #logger.info("Spatial sampling...")
     return power_law_sampling(par = par, min_val = min_val, max_val = max_val, n_samples = n_samples)
 
 def temporal_power_law_sampling( par = 0.8, min_val = 300, max_val = 61200, n_samples = 1):    
@@ -94,7 +94,7 @@ def temporal_power_law_sampling( par = 0.8, min_val = 300, max_val = 61200, n_sa
         Array of shape (n_samples,) containing the sampled waiting-times from 
         the power law distribution p(t) ∝ t^(-1-par)
     """
-    logger.info("Temporal sampling...")
+    #logger.info("Temporal sampling...")
     return power_law_sampling(par = par, min_val = min_val, max_val = max_val, n_samples = n_samples)
 
 
