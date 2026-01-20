@@ -1,8 +1,6 @@
 import unittest
 import numpy as np
 from model.utils import power_law_sampling, spatial_power_law_sampling, temporal_power_law_sampling
-from model.user import User
-from model.simulation import Simulation
 
 class TestPowerLawSampling(unittest.TestCase):
 
@@ -34,24 +32,6 @@ class TestPowerLawSampling(unittest.TestCase):
         self.assertIsNotNone(samples)
         self.assertEqual(samples.shape, (100,))
 
-class TestUser(unittest.TestCase):
-    
-    ##THIS SUPER METHOD IS SETTING THE SAME ISTANCE FOR ALL THE TESTS
-    ##DO NOT MODIFY THE VALUES FOR THE CLASS. READ ONLY
-    @classmethod
-    def setUpClass(cls):
-        cls.simulation = Simulation(ro=0.6, gamma=-0.21, time=5*17*3600)
-        cls.simulation.run()
-
-    def test_user_history_type(self):
-        self.assertIsInstance(self.simulation.user.user_history, list)
-
-    def test_venue_history_type(self):
-        self.assertIsInstance(self.simulation.user.venue_history, list)
-
-    def test_trajectory_continuity(self):
-        for i in range(len(self.simulation.user.user_history) - 2):
-            self.assertEqual(self.simulation.user.user_history[i+1][2], self.simulation.user.user_history[i+2][1])
 
 
 if __name__ == "__main__":

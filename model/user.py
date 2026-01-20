@@ -18,6 +18,7 @@ class User:
         state (str): Current state of the user ("E" for exploring, "R" for returning).
         next_venue (int): The next venue selected by the user.
         position (int): Current venue position.
+        prevoius_postion (int): Previous position of user.
         delta_r (float or None): Distance of movement (None if returning).
         delta_t (float or None): Waiting time, defined as the time a user spent at one location.
         clock (float): Simulation clock time for the user.
@@ -27,7 +28,7 @@ class User:
         make_decision: Decide whether to explore or return and update state, position, and history.
         exploring: Perform an exploration move, updating state, venue count, and history.
         returning: Perform a return move, updating state and incrementing visit count.
-        get_return_venue: Select a previously visited venue to return to (excluding current).
+        get_return_venue: Select a previously visited venue (excluding current) using frequency-based probability.
         get_exploration_venue: Return a not visited yet venue.
         first_exploration: Execute the first movement, which must be an exploration.
         update_histories: Update venue and user hisotries
@@ -108,6 +109,10 @@ class User:
         prefers to return to a venue which has been visited frequently before. 
         Details of algorithm functioning below.
 
+
+        Returns:
+        --------
+        the index of the selected previous position (type: int)
         """
         
         #We exclude the possibility to return to the current position
@@ -123,7 +128,6 @@ class User:
 
         #Retriving the right number/position in the history matching with the choice in venue_ids
         self.next_venue_return = [i for i, row in enumerate(self.venue_history) if row[0] == venue_ids[choice]][0]
-
         return self.next_venue_return
     
     def get_exploration_venue(self):
@@ -157,9 +161,8 @@ class User:
         
         else:
             self.venue_history[self.next_venue_return][1] += 1
-            self.user_history.append([self.state, self.previous_position, self.next_venue, self.delta_r, self.delta_t])
+            self.user_history.append([self.state, self.previous_position, self.position, self.delta_r, self.delta_t])
 
-            ###Rivedere!!!!
               
          
          

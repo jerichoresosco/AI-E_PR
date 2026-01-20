@@ -6,18 +6,23 @@ import logging
 logger = logging.getLogger(__name__)
 
 class Simulation:
-    def __init__(self, ro, gamma, time):
+    def __init__(self, ro, gamma,user_number, time):
         logger.info("Initializing the simulation...")
         self.ro = ro
         self.gamma = gamma
+        self.user_number = user_number
         self.time = time
         self.user = None
+        self.users_list = []
 
     def run(self):
-        self.user = User(uid = "Pippo", simulation = self)
-        self.user.first_exploration()
-        while self.user.clock < self.time:
-            self.user.make_decision()
+
+        for i in range(self.user_number):
+            self.user = User(uid = f"User_{i}", simulation = self)
+            self.user.first_exploration()
+            while self.user.clock < self.time:
+                self.user.make_decision()
+            self.users_list.append(self.user)
         pprint(self.user.user_history)
         pprint(self.user.venue_history)
 
