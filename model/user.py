@@ -45,15 +45,18 @@ class User:
  
 
         self.uid = uid 
+
+
         self.user_history = [["State(E/R)", "Starting Venue", "Destination", "Distance", "Time"]] 
-        self.venue_history = [["Venue", "Number of visits"], [1, 1]] 
-        self.simulation = simulation 
+        self.venue_history = [["Venue", "Number of visits"], [1, 1]]
         self.num_distinct_venues = 1 ##lo sostituirò con num di elementi colonna history?
-        self.state = None
-        self.next_venue = None
         self.position = 1 #Position is starting as 1 so "Venue" in self.venue_history is following the indentation:
                             # element 1: [1,z], element 2 : [2,x], ..., element k: [k,c]
-        self.previous_position = 0
+
+        self.simulation = simulation 
+        self.state = None
+        self.next_venue = None
+        self.previous_position = None
         self.delta_r = None
         self.delta_t = None
         self.clock = 0
@@ -154,7 +157,9 @@ class User:
         
         else:
             self.venue_history[self.next_venue_return][1] += 1
-            self.user_history.append([self.state, self.position, self.next_venue, self.delta_r, self.delta_t])
+            self.user_history.append([self.state, self.previous_position, self.next_venue, self.delta_r, self.delta_t])
+
+            ###Rivedere!!!!
               
          
          

@@ -11,14 +11,24 @@ class Simulation:
         self.ro = ro
         self.gamma = gamma
         self.time = time
+        self.user = None
 
     def run(self):
-        user = User(uid = "Pippo", simulation = self)
-        user.first_exploration()
-        while user.clock < self.time:
-            user.make_decision()
-        pprint(user.user_history)
-        pprint(user.venue_history)
+        self.user = User(uid = "Pippo", simulation = self)
+        self.user.first_exploration()
+        while self.user.clock < self.time:
+            self.user.make_decision()
+        pprint(self.user.user_history)
+        pprint(self.user.venue_history)
+
+        print(type(self.user.user_history))
+        print(type(self.user.venue_history))
+
+        shape_user = (len(self.user.user_history), len(self.user.user_history[0]))
+        shape_venue = (len(self.user.venue_history), len(self.user.venue_history[0]))
+
+        print(shape_user)
+        print(shape_venue)
 
 
         
