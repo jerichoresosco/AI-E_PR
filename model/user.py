@@ -1,6 +1,8 @@
 import numpy as np
+import pandas as pd
 from model.utils import spatial_power_law_sampling, temporal_power_law_sampling
 import logging
+from pprint import pprint
 
 logger = logging.getLogger(__name__)
 
@@ -11,7 +13,7 @@ class User:
 
     Attributes:
         uid (int): Unique identifier for the user.
-        user_history (list): History of the user's state, starting venue, destination, distance, and time.
+        user_history (list): History of the user's state, starting venue, destination, distance, angle and time.
         venue_history (list): History of venues visited and number of visits per venue.
         simulation (Simulation): Reference to the simulation model instance.
         num_distinct_venues (int): Number of distinct venues visited.
@@ -20,6 +22,7 @@ class User:
         position (int): Current venue position.
         prevoius_postion (int): Previous position of user.
         delta_r (float or None): Distance of movement (None if returning).
+        angle (float or None): Angle of movement when exploring (None if returning)
         delta_t (float or None): Waiting time, defined as the time a user spent at one location.
         clock (float): Simulation clock time for the user.
 
@@ -48,7 +51,7 @@ class User:
         self.uid = uid 
 
 
-        self.user_history = [["State(E/R)", "Starting Venue", "Destination", "Distance", "Time"]] 
+        self.user_history = [["State(E/R)", "Starting_Venue", "Destination", "Distance", "Angle", "Time"]] 
         self.venue_history = [["Venue", "Number of visits"], [1, 1]]
         self.num_distinct_venues = 1 ##lo sostituirò con num di elementi colonna history?
         self.position = 1 #Position is starting as 1 so "Venue" in self.venue_history is following the indentation:
@@ -59,6 +62,7 @@ class User:
         self.next_venue = None
         self.previous_position = None
         self.delta_r = None
+        self.angle = None
         self.delta_t = None
         self.clock = 0
 
@@ -92,6 +96,7 @@ class User:
             self.num_distinct_venues += 1
             self.next_venue = self.get_exploration_venue()
             self.delta_r = spatial_power_law_sampling().item()
+            self.angle = np.random.uniform(0, 2 * np.pi)
 
     def returning(self):
             """
@@ -101,7 +106,7 @@ class User:
             self.state = "R"
             self.next_venue = self.get_return_venue()
             self.delta_r = None
-            self.venue_history[self.next_venue_return][1] += 1
+            self.angle = None    
 
     def get_return_venue(self):
         """
@@ -153,18 +158,33 @@ class User:
     def update_histories(self):
         """
         Update histories of venues and user depending on which state has been selected
+
         """
          
         if self.state == "E":
             self.venue_history.append([self.num_distinct_venues, 1])
-            self.user_history.append([self.state, self.previous_position, self.position, self.delta_r, self.delta_t])
+            self.user_history.append([self.state, self.previous_position, self.position, self.delta_r, self.angle, self.delta_t])
         
         else:
             self.venue_history[self.next_venue_return][1] += 1
-            self.user_history.append([self.state, self.previous_position, self.position, self.delta_r, self.delta_t])
+            self.user_history.append([self.state, self.previous_position, self.position, self.delta_r,self.angle, self.delta_t])
 
-              
-         
+
+    def convert_histories_to_df(self):
+        """
+        Convert the user history and venue history lists into Pandas DataFrames.        
+
+        """
+        #User_history
+        columns_user = self.user_history[0]   
+        data_user = self.user_history[1:]     
+        self.user_history = pd.DataFrame(data_user, columns=columns_user)
+
+        #venue_history
+        columns_venue = self.venue_history[0]
+        data_venue = self.venue_history[1:]    
+        self.venue_history = pd.DataFrame(data_venue, columns=columns_venue)
+
          
 
     
