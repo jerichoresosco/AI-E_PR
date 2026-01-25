@@ -3,11 +3,12 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import os
 import inspect
+import model.user
 
 import logging
 logger = logging.getLogger(__name__)
 
-def power_law_sampling( par, min_val, max_val, n_samples):
+def power_law_sampling(par, min_val, max_val, n_samples):
     """
     Core function used to calculate samplings from analytical power law distribution p(x) ∝ x^(-1-par),
     as done in the EPR paper "Modelling the scaling properties of human mobility".
@@ -50,7 +51,7 @@ def power_law_sampling( par, min_val, max_val, n_samples):
     return r
 
 
-def spatial_power_law_sampling( par = 0.55, min_val = 5, max_val = 100000, n_samples = 1):    
+def spatial_power_law_sampling(par = 0.55, min_val = 5, max_val = 100000, n_samples = 1):    
     """
     Wrapper funtion for power_law_sampling from a spatial distribution
 
@@ -247,8 +248,12 @@ def compute_exploration_points(user, starting_point=None, x_range=(-10, 10), y_r
 
 import matplotlib.pyplot as plt
 
-def plot_mobility_visualization(x, y, sizes, x_traj, y_traj, rg=False):
+def plot_mobility_visualization(user, rg=False):
     """Plots places visited by the users in the space with trajectories"""
+
+    x, y , sizes, x_traj, y_traj = compute_exploration_points(user,
+                                                                starting_point=(0,0),
+                                                                marker_scale=20)
     
     _, ax = plt.subplots()  
 
@@ -256,7 +261,8 @@ def plot_mobility_visualization(x, y, sizes, x_traj, y_traj, rg=False):
     ax.plot(x_traj, y_traj, color='red', linewidth=1, alpha=0.7)
 
     if rg:
-        r_cm, r_gyr = radius_of_gyration(x_traj, y_traj)
+        r_gyr = user.radius_of_gyration
+        r_cm = user.center_of_mass
 
         ax.scatter(*r_cm, c="purple", alpha=0.6, s=50, zorder=3)
         circle = plt.Circle(
@@ -271,8 +277,6 @@ def plot_mobility_visualization(x, y, sizes, x_traj, y_traj, rg=False):
     ax.set_xlabel("X")
     ax.set_ylabel("Y")
     ax.set_title("Mobility")
-
-    plt.show()
 
     filepath_save_plot("plots")
 
@@ -296,22 +300,81 @@ def trajectory_from_user(user):
 
     return trajectory
 
-def radius_of_gyration(x_traj, y_traj):
+
+def convert_histories_to_df(user):
+        """
+        Convert the user history and venue history lists into Pandas DataFrames.        
+
+        """
+        #User_history
+        columns_user = user.user_history[0]   
+        data_user = user.user_history[1:]     
+        user.user_history = pd.DataFrame(data_user, columns=columns_user)
+
+        #venue_history
+        columns_venue = user.venue_history[0]
+        data_venue = user.venue_history[1:]    
+        user.venue_history = pd.DataFrame(data_venue, columns=columns_venue)
+
+
+def plot_rg_distribution(rg_list, num_bins=30):
     """
-    Calculates the radius of gyration and the center of mass given the trajectory of user as two distinct 
-    numpy vectors containing coordinates
+    Plot the distribution of radius of gyration (R_g) values.
+
+    Parameters
+    ----------
+    rg_list : list of float
+        List of radius of gyration values for the users.
+    bins : int, optional
+        Number of bins to use in the histogram. Default is 30.
+
+    Returns
+    -------
+    None
+    """
+    rg_array = np.array(rg_list)
+
+    number_of_users = len(rg_array)
+
+    #Creating logaritmic binning
+    min_rg = rg_array[rg_array > 0].min()  #Avoiding eventual zero
+    max_rg = rg_array.max()
+    bins = np.logspace(0.9*np.log10(min_rg), 1.1*np.log10(max_rg), num_bins)
+        #Those numbers, 0.9 and 1.1 save us from border problems
+
+    plt.figure(figsize=(8, 6))
+
+    plt.hist(rg_array, bins=bins, edgecolor='black', alpha=0.7)
+    plt.xscale('log') 
+    plt.yscale('log')  
+    plt.xlabel("Radius of gyration")
+    plt.ylabel("Frequency")
+    plt.title(f"Distribution of Radius of Gyration for {number_of_users} users")
+    plt.grid(True, linestyle='--', alpha=0.4)
+    filepath_save_plot("plots")
+
+def plot_frequency_distribution(venue_history, gamma):
     
-    :param x_traj: x coordinates of trajectory
-    :param y_traj: y coordinates of trajectory
+    freq = venue_history['Number of visits'].value_counts().sort_index()
+    x = freq.index.values     
+    y = freq.values            
 
-    Returns:
-    --------
-    radius of gyration (float)
-    """
-    x_cm = np.mean(x_traj)
-    y_cm = np.mean(y_traj)
+    plt.figure(figsize=(8,6))
 
-    r_cm = np.array([x_cm, y_cm])
-    r_gyr = np.sqrt(np.mean((x_traj - x_cm)**2 + (y_traj - y_cm)**2))
+    plt.scatter(x, y, color='blue', label='Data', s=50)
 
-    return r_cm, r_gyr
+    x_fit = np.linspace(min(x), max(x), 100)
+    y_fit = x_fit**(-1-gamma)
+    # scaling y so that function starts with the same maximum
+    y_fit = y_fit * max(y)/max(y_fit)  
+    plt.plot(x_fit, y_fit, color='red', linestyle='--', label=r'$f(x) = x^{-1-\gamma}$')
+
+    plt.xscale('log')
+    plt.yscale('log')
+    plt.xlabel("Number of visits")
+    plt.ylabel("Frequency")
+    plt.title("Rank-frequency plot of Number of visits per venue")
+    plt.grid(True, linestyle='--', alpha=0.3)
+    plt.legend()
+    filepath_save_plot("plots")
+        
