@@ -32,19 +32,5 @@ class TestPowerLawSampling(unittest.TestCase):
         self.assertIsNotNone(samples)
         self.assertEqual(samples.shape, (100,))
 
-    def test_radius_of_gyration(self):
-        "test with dummies values if radius of gyration and center of mass are calculated correctly"
-        x_traj = np.array([1,0,-1,0])
-        y_traj = np.array([0,1,0,-1])
-
-        r_cm, r_gyr = model.utils.radius_of_gyration(x_traj, y_traj)
-
-        ##Da terminare!
-
-        np.testing.assert_array_equal(r_cm, np.array([0, 0]))
-
-    
-
-
 if __name__ == "__main__":
     unittest.main()

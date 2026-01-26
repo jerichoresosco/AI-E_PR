@@ -37,7 +37,6 @@ class User:
         get_exploration_venue: Return a not visited yet venue.
         first_exploration: Execute the first movement, which must be an exploration.
         update_histories: Update venue and user hisotries
-        get_radius_of_gyration: Calculate r_cm and r_gyr
 
     """
     
@@ -221,4 +220,25 @@ class User:
 
         return self.r_cm
 
+    @property
+    def two_radius_of_gyration(self):
+        """
+        Calculates the radius of gyration and the center of mass given user object
+        
+        :param user: user (User)
 
+        Returns:
+        --------
+        the center of mass radius and radius of gyration (tuple(np.array, float))
+        """
+        _, _, _, x_traj, y_traj = model.utils.compute_exploration_points(self,
+                                                                        starting_point=(0,0),
+                                                                        marker_scale=20, k_top=2)
+        x_cm = np.mean(x_traj)
+        y_cm = np.mean(y_traj)
+
+        self.r_gyr = np.sqrt(np.mean((x_traj - x_cm)**2 + (y_traj - y_cm)**2))
+
+        return self.r_gyr
+    
+    

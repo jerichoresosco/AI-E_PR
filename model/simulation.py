@@ -19,6 +19,7 @@ class Simulation:
         self.rg = None
         self.users_list = []
         self.rg_list = []
+        self.two_rg_list = []
 
     def run(self):
 
@@ -28,11 +29,15 @@ class Simulation:
                 self.user.make_decision()
             model.utils.convert_histories_to_df(self.user)
             self.users_list.append(self.user)
-            model.utils.plot_mobility_visualization(self.user, rg = True)
             self.rg_list.append(self.user.radius_of_gyration)
-        #model.utils.plot_rg_distribution(self.rg_list, num_bins=20)
-            print(self.user.venue_history)
-            model.utils.plot_frequency_distribution(self.user.venue_history, self.gamma)
+            self.two_rg_list.append(self.user.two_radius_of_gyration)
+
+        model.utils.plot_mobility_visualization(self.user, rg = True)
+        model.utils.plot_rg_distribution(self.rg_list, num_bins=20)
+        model.utils.plot_frequency_distribution(self.user.venue_history, self.gamma)
+        model.utils.plot_two_radius_vs_radius(self.rg_list, self.two_rg_list)
+
+
         
             
  

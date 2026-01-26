@@ -175,7 +175,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-def compute_exploration_points(user, starting_point=None, x_range=(-10, 10), y_range=(-10, 10), marker_scale=20):
+def compute_exploration_points(user, starting_point=None, x_range=(-10, 10), y_range=(-10, 10), marker_scale=20, k_top = None):
     """
     Compute the 2D coordinates for exploration steps of a User based on angle and distance (delta_r),
     and size the markers according to the number of visits in venue_history.
@@ -237,11 +237,23 @@ def compute_exploration_points(user, starting_point=None, x_range=(-10, 10), y_r
     x_traj = np.array([])
     y_traj = np.array([])
 
+    if k_top is not None:
+        # Get the top-k venues by number of visits
+        top_k_venues = (
+            user.venue_history
+            .sort_values("Number of visits", ascending=False)
+            .head(k_top)["Venue"]
+            .to_numpy()
+            )
+    else:
+        top_k_venues = None
+        
     trajectory = trajectory_from_user(user)
     for position in (trajectory):
-        index = position - 1  #x_venue 0-th element is 1
-        x_traj = np.append(x_traj, x_venue[index])
-        y_traj = np.append(y_traj, y_venue[index])
+        if (top_k_venues is None) or (position in top_k_venues):
+            index = position - 1  #x_venue 0-th element is 1
+            x_traj = np.append(x_traj, x_venue[index])
+            y_traj = np.append(y_traj, y_venue[index])
 
     return x_venue, y_venue, marker_sizes, x_traj, y_traj
 
@@ -353,11 +365,11 @@ def plot_rg_distribution(rg_list, num_bins=30):
     plt.grid(True, linestyle='--', alpha=0.4)
     filepath_save_plot("plots")
 
-def plot_frequency_distribution(venue_history, gamma):
-    
-    freq = venue_history['Number of visits'].value_counts().sort_index()
-    x = freq.index.values     
-    y = freq.values            
+def plot_frequency_distribution(venue_history, gamma):         
+
+    freq = venue_history['Number of visits'].sort_values(ascending=False).reset_index(drop=True)
+    x = freq.index.values + 1 #+1 in order to start from 1, so max value is first rank, not 0
+    y = freq.values
 
     plt.figure(figsize=(8,6))
 
@@ -371,10 +383,20 @@ def plot_frequency_distribution(venue_history, gamma):
 
     plt.xscale('log')
     plt.yscale('log')
-    plt.xlabel("Number of visits")
+    plt.xlabel("Rank")
     plt.ylabel("Frequency")
     plt.title("Rank-frequency plot of Number of visits per venue")
     plt.grid(True, linestyle='--', alpha=0.3)
     plt.legend()
     filepath_save_plot("plots")
+
+def plot_two_radius_vs_radius(rg_list, two_rg_list):
+    
+    plt.scatter(rg_list, two_rg_list)
+    plt.xlabel("Radius of Gyration")
+    plt.ylabel("2-Radius of Gyration")
+    plt.grid(True)
+    plt.show()
+    filepath_save_plot("plots")
+
         

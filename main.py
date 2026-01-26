@@ -14,12 +14,12 @@ logging.basicConfig(
 def main():
     logger.info("Initializing the simulation...")
     start_time = time.time()
-    simulation = model.simulation.Simulation(ro = 0.1,
-                                             gamma = +0.2,
+    simulation = model.simulation.Simulation(ro = 0.6,
+                                             gamma = +0.21,
                                              a_param = 0.55,
                                              b_param= 0.8,
-                                             user_number=1,
-                                             time=52*7*17*3600)
+                                             user_number=400,
+                                             time=17*3600)
     simulation.run()
     end_time = time.time()
     elapsed_time = end_time - start_time
