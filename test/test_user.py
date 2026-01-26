@@ -46,7 +46,7 @@ class TestUser(unittest.TestCase):
             start_pos = user_history.iloc[i+2, 1]    
             self.assertEqual(end_pos, start_pos)
 
-    def test_get_return_venue(self):
+    def test_get_return_venue_simple(self):
         """Test with a correctness of 99.996% if return venue selects the most probable venue"""
 
         forced_venue_history = [["Venue", "Number of visits"], [1, 999], [2,1]]

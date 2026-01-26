@@ -17,7 +17,7 @@ def main():
 
     plot_list = [
         #"mobility",
-        "rg_distribution",
+        #"rg_distribution",
         #"freq_distribution",
         #"two_radius"
     ]
