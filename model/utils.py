@@ -260,7 +260,7 @@ def compute_exploration_points(user, starting_point=None, x_range=(-10, 10), y_r
 
 import matplotlib.pyplot as plt
 
-def plot_mobility_visualization(user, rg=False):
+def plot_mobility_visualization(user, rg=False, title = None):
     """Plots places visited by the users in the space with trajectories"""
 
     x, y , sizes, x_traj, y_traj = compute_exploration_points(user,
@@ -288,7 +288,8 @@ def plot_mobility_visualization(user, rg=False):
 
     ax.set_xlabel("X")
     ax.set_ylabel("Y")
-    ax.set_title("Mobility")
+    if title:
+        ax.set_title(title,fontsize=6)
 
     filepath_save_plot("plots")
 
@@ -329,7 +330,7 @@ def convert_histories_to_df(user):
         user.venue_history = pd.DataFrame(data_venue, columns=columns_venue)
 
 
-def plot_rg_distribution(rg_list, num_bins=30):
+def plot_rg_distribution(rg_list, num_bins=30, title = None):
     """
     Plot the distribution of radius of gyration (R_g) values.
 
@@ -361,11 +362,13 @@ def plot_rg_distribution(rg_list, num_bins=30):
     plt.yscale('log')  
     plt.xlabel("Radius of gyration")
     plt.ylabel("Frequency")
-    plt.title(f"Distribution of Radius of Gyration for {number_of_users} users")
+    if title:
+        plt.title(title,fontsize=6)
+    #plt.title(f"Distribution of Radius of Gyration for {number_of_users} users")
     plt.grid(True, linestyle='--', alpha=0.4)
     filepath_save_plot("plots")
 
-def plot_frequency_distribution(venue_history, gamma):         
+def plot_frequency_distribution(venue_history, gamma, title = None):         
 
     freq = venue_history['Number of visits'].sort_values(ascending=False).reset_index(drop=True)
     x = freq.index.values + 1 #+1 in order to start from 1, so max value is first rank, not 0
@@ -385,18 +388,30 @@ def plot_frequency_distribution(venue_history, gamma):
     plt.yscale('log')
     plt.xlabel("Rank")
     plt.ylabel("Frequency")
-    plt.title("Rank-frequency plot of Number of visits per venue")
+    if title:
+        plt.title(title,fontsize=6)
+    #plt.title("Rank-frequency plot of Number of visits per venue")
     plt.grid(True, linestyle='--', alpha=0.3)
     plt.legend()
     filepath_save_plot("plots")
 
-def plot_two_radius_vs_radius(rg_list, two_rg_list):
+def plot_two_radius_vs_radius(rg_list, two_rg_list, title = None):
     
     plt.scatter(rg_list, two_rg_list)
     plt.xlabel("Radius of Gyration")
     plt.ylabel("2-Radius of Gyration")
-    plt.grid(True)
-    plt.show()
+    if title:
+        plt.title(title,fontsize=6)
     filepath_save_plot("plots")
 
+
+def build_plot_title(base_title, sim_params):
+    """
+    Create a plot title using a base title and a dictionary of simulation parameters.
+    """
+    if not sim_params:
+        return base_title
+
+    param_str = ", ".join(f"{k}={v}" for k, v in sim_params.items())
+    return f"{base_title} ({param_str})"
         
