@@ -1,12 +1,14 @@
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 import os
 import inspect
+import model.user
 
 import logging
 logger = logging.getLogger(__name__)
 
-def power_law_sampling( par, min_val, max_val, n_samples):
+def power_law_sampling(par, min_val, max_val, n_samples):
     """
     Core function used to calculate samplings from analytical power law distribution p(x) ∝ x^(-1-par),
     as done in the EPR paper "Modelling the scaling properties of human mobility".
@@ -49,7 +51,7 @@ def power_law_sampling( par, min_val, max_val, n_samples):
     return r
 
 
-def spatial_power_law_sampling( par = 0.55, min_val = 5, max_val = 100000, n_samples = 1):    
+def spatial_power_law_sampling(par = 0.55, min_val = 5, max_val = 100000, n_samples = 1):    
     """
     Wrapper funtion for power_law_sampling from a spatial distribution
 
@@ -135,3 +137,281 @@ def filepath_save_plot(folder = "test_plots", name: str = None):
     
     plt.savefig(filepath)
     plt.close()
+
+
+def create_venue_matrix_from_users(users, fill_value=0):
+    """
+    Creates a matrix (pandas) with venues x users structure reading
+    directly from User's list 
+        
+    Parameters:
+    ----------
+    users (list): list of User istances
+    fill_value: filler-value for empty elements(default: np.nan)
+       
+    Returns:
+    --------
+    pd.DataFrame: matrix with Venue_i (rows) e User_j (columns)
+    """
+        
+    user_visits = []
+    for user in users:
+        visits = [row[1] for row in user.venue_history[1:]]
+        user_visits.append(visits)
+       
+    max_len = max(len(visits) for visits in user_visits)
+        
+    data = {}
+    for i, visits in enumerate(user_visits):
+        user_id = f"{users[i].uid}"
+        padded = visits + [fill_value] * (max_len - len(visits))
+        data[user_id] = padded
+        
+    df = pd.DataFrame(data, index=[f"Venue_{i+1}" for i in range(max_len)])
+        
+    return df
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+def compute_exploration_points(user, starting_point=None, x_range=(-10, 10), y_range=(-10, 10), marker_scale=20, k_top = None):
+    """
+    Compute the 2D coordinates for exploration steps of a User based on angle and distance (delta_r),
+    and size the markers according to the number of visits in venue_history.
+
+    Parameters
+    ----------
+    user : User
+        An instance of the User class containing user_history and venue_history as DataFrames.
+    starting_point : tuple, optional
+        (x0, y0) coordinates to start from. If None, a random starting point is generated
+        within the provided x_range and y_range.
+    x_range : tuple of float, default (-10, 10)
+        Range for random X coordinate if starting_point is None.
+    y_range : tuple of float, default (-10, 10)
+        Range for random Y coordinate if starting_point is None.
+    marker_scale : float, default 20
+        Scaling factor for marker sizes according to number of visits.
+
+    Returns
+    -------
+    x : np.ndarray
+        X coordinates of exploration points.
+    y : np.ndarray
+        Y coordinates of exploration points.
+    marker_sizes : np.ndarray
+        Marker sizes proportional to the number of visits for each venue.
+    """
+
+    # Determine starting point
+    if starting_point is None:
+        x0 = np.random.uniform(*x_range)
+        y0 = np.random.uniform(*y_range)
+    else:
+        x0, y0 = starting_point
+
+    # Filter only exploration steps
+    explore_df = user.user_history[user.user_history["State(E/R)"] == "E"]
+
+    if explore_df.empty:
+        # No exploration steps
+        logger.warning("No exploration is taking place! Impossible to compute exploration points")
+        return np.array([]), np.array([]), np.array([])
+
+    # Compute X and Y coordinates using polar to Cartesian conversion
+    x_venue, y_venue = np.array([x0]),np.array([y0])
+    for row in explore_df.itertuples():
+
+        x = x_venue[row.Starting_Venue - 1] + row.Distance * np.cos(row.Angle) #-1 because starting_venue[0]=1
+        y = y_venue[row.Starting_Venue - 1] + row.Distance * np.sin(row.Angle) # and not = 0
+        x_venue = np.append(x_venue, x)
+        y_venue = np.append(y_venue, y)
+
+    # Map number of visits from venue_history
+    number_visits = user.venue_history["Number of visits"].to_numpy()
+
+    # Marker sizes proportional to number of visits
+    marker_sizes = number_visits * marker_scale
+
+    x_traj = np.array([])
+    y_traj = np.array([])
+
+    if k_top is not None:
+        # Get the top-k venues by number of visits
+        top_k_venues = (
+            user.venue_history
+            .sort_values("Number of visits", ascending=False)
+            .head(k_top)["Venue"]
+            .to_numpy()
+            )
+    else:
+        top_k_venues = None
+        
+    trajectory = trajectory_from_user(user)
+    for position in (trajectory):
+        if (top_k_venues is None) or (position in top_k_venues):
+            index = position - 1  #x_venue 0-th element is 1
+            x_traj = np.append(x_traj, x_venue[index])
+            y_traj = np.append(y_traj, y_venue[index])
+
+    return x_venue, y_venue, marker_sizes, x_traj, y_traj
+
+
+import matplotlib.pyplot as plt
+
+def plot_mobility_visualization(user, rg=False, title = None):
+    """Plots places visited by the users in the space with trajectories"""
+
+    x, y , sizes, x_traj, y_traj = compute_exploration_points(user,
+                                                                starting_point=(0,0),
+                                                                marker_scale=20)
+    
+    _, ax = plt.subplots()  
+
+    ax.scatter(x, y, s=sizes, c='blue', alpha=0.6)
+    ax.plot(x_traj, y_traj, color='red', linewidth=1, alpha=0.7)
+
+    if rg:
+        r_gyr = user.radius_of_gyration
+        r_cm = user.center_of_mass
+
+        ax.scatter(*r_cm, c="purple", alpha=0.6, s=50, zorder=3)
+        circle = plt.Circle(
+            tuple(r_cm),
+            r_gyr,
+            facecolor=(0.6, 0, 0.8, 0.2),
+            edgecolor=(0.4, 0, 0.6, 0.8), 
+            linewidth=2
+        )
+        ax.add_patch(circle) 
+
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
+    if title:
+        ax.set_title(title,fontsize=6)
+
+    filepath_save_plot("plots")
+
+    
+def trajectory_from_user(user):
+
+    """
+    Calculate the trajectory of a user
+
+    Parameters:
+    -----------
+    user: the user whom calculation is needed (User)
+     
+    Returns:
+    --------
+    the trajectory of the user (Tuple(np.array, np.array)) """
+
+    trajectory_without_starting_position = user.user_history["Destination"].to_numpy()
+    trajectory = np.insert(trajectory_without_starting_position, 0, 1) #Adding 1 because 1 is starting position
+    
+
+    return trajectory
+
+
+def convert_histories_to_df(user):
+        """
+        Convert the user history and venue history lists into Pandas DataFrames.        
+
+        """
+        #User_history
+        columns_user = user.user_history[0]   
+        data_user = user.user_history[1:]     
+        user.user_history = pd.DataFrame(data_user, columns=columns_user)
+
+        #venue_history
+        columns_venue = user.venue_history[0]
+        data_venue = user.venue_history[1:]    
+        user.venue_history = pd.DataFrame(data_venue, columns=columns_venue)
+
+
+def plot_rg_distribution(rg_list, num_bins=30, title = None):
+    """
+    Plot the distribution of radius of gyration (R_g) values.
+
+    Parameters
+    ----------
+    rg_list : list of float
+        List of radius of gyration values for the users.
+    bins : int, optional
+        Number of bins to use in the histogram. Default is 30.
+
+    Returns
+    -------
+    None
+    """
+    rg_array = np.array(rg_list)
+
+    number_of_users = len(rg_array)
+
+    #Creating logaritmic binning
+    min_rg = rg_array[rg_array > 0].min()  #Avoiding eventual zero
+    max_rg = rg_array.max()
+    bins = np.logspace(0.9*np.log10(min_rg), 1.1*np.log10(max_rg), num_bins)
+        #Those numbers, 0.9 and 1.1 save us from border problems
+
+    plt.figure(figsize=(8, 6))
+
+    plt.hist(rg_array, bins=bins, edgecolor='black', alpha=0.7)
+    plt.xscale('log') 
+    plt.yscale('log')  
+    plt.xlabel("Radius of gyration")
+    plt.ylabel("Frequency")
+    if title:
+        plt.title(title,fontsize=6)
+    #plt.title(f"Distribution of Radius of Gyration for {number_of_users} users")
+    plt.grid(True, linestyle='--', alpha=0.4)
+    filepath_save_plot("plots")
+
+def plot_frequency_distribution(venue_history, gamma, title = None):         
+
+    freq = venue_history['Number of visits'].sort_values(ascending=False).reset_index(drop=True)
+    x = freq.index.values + 1 #+1 in order to start from 1, so max value is first rank, not 0
+    y = freq.values
+
+    plt.figure(figsize=(8,6))
+
+    plt.scatter(x, y, color='blue', label='Data', s=50)
+
+    x_fit = np.linspace(min(x), max(x), 100)
+    y_fit = x_fit**(-1-gamma)
+    # scaling y so that function starts with the same maximum
+    y_fit = y_fit * max(y)/max(y_fit)  
+    plt.plot(x_fit, y_fit, color='red', linestyle='--', label=r'$f(x) = x^{-1-\gamma}$')
+
+    plt.xscale('log')
+    plt.yscale('log')
+    plt.xlabel("Rank")
+    plt.ylabel("Frequency")
+    if title:
+        plt.title(title,fontsize=6)
+    #plt.title("Rank-frequency plot of Number of visits per venue")
+    plt.grid(True, linestyle='--', alpha=0.3)
+    plt.legend()
+    filepath_save_plot("plots")
+
+def plot_two_radius_vs_radius(rg_list, two_rg_list, title = None):
+    
+    plt.scatter(rg_list, two_rg_list)
+    plt.xlabel("Radius of Gyration")
+    plt.ylabel("2-Radius of Gyration")
+    if title:
+        plt.title(title,fontsize=6)
+    filepath_save_plot("plots")
+
+
+def build_plot_title(base_title, sim_params):
+    """
+    Create a plot title using a base title and a dictionary of simulation parameters.
+    """
+    if not sim_params:
+        return base_title
+
+    param_str = ", ".join(f"{k}={v}" for k, v in sim_params.items())
+    return f"{base_title} ({param_str})"
+        

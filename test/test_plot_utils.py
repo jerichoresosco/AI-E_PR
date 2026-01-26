@@ -1,6 +1,10 @@
+import sys, os
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(ROOT_DIR)
+
 import numpy as np
 import matplotlib.pyplot as plt
-from model.utils import power_law_sampling, filepath_save_plot
+import model.utils
 import os
 
 def test_power_law_sampling():
@@ -34,7 +38,7 @@ def test_power_law_sampling():
     n_samples = 100000
 
     # Samples generation
-    samples = power_law_sampling(par=par, min_val=min_val, max_val=max_val,n_samples=n_samples)
+    samples = model.utils.power_law_sampling(par=par, min_val=min_val, max_val=max_val,n_samples=n_samples)
 
     #Plotting results
     plt.figure(figsize=(12, 5))
@@ -66,7 +70,7 @@ def test_power_law_sampling():
 
     plt.tight_layout()
 
-    filepath_save_plot(folder="test_plots")
+    model.utils.filepath_save_plot(folder="test_plots")
 
     plt.close()
 
