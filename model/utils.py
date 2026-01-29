@@ -51,7 +51,7 @@ def power_law_sampling(par, min_val, max_val, n_samples):
     return r
 
 
-def spatial_power_law_sampling(par = 0.55, min_val = 5, max_val = 100000, n_samples = 1):    
+def spatial_power_law_sampling(par = 0.55, min_val = 1, max_val = 100000, n_samples = 1):    
     """
     Wrapper funtion for power_law_sampling from a spatial distribution
 
@@ -139,42 +139,6 @@ def filepath_save_plot(folder = "test_plots", name: str = None):
     plt.close()
 
 
-def create_venue_matrix_from_users(users, fill_value=0):
-    """
-    Creates a matrix (pandas) with venues x users structure reading
-    directly from User's list 
-        
-    Parameters:
-    ----------
-    users (list): list of User istances
-    fill_value: filler-value for empty elements(default: np.nan)
-       
-    Returns:
-    --------
-    pd.DataFrame: matrix with Venue_i (rows) e User_j (columns)
-    """
-        
-    user_visits = []
-    for user in users:
-        visits = [row[1] for row in user.venue_history[1:]]
-        user_visits.append(visits)
-       
-    max_len = max(len(visits) for visits in user_visits)
-        
-    data = {}
-    for i, visits in enumerate(user_visits):
-        user_id = f"{users[i].uid}"
-        padded = visits + [fill_value] * (max_len - len(visits))
-        data[user_id] = padded
-        
-    df = pd.DataFrame(data, index=[f"Venue_{i+1}" for i in range(max_len)])
-        
-    return df
-
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-
 def compute_exploration_points(user, starting_point=None, x_range=(-10, 10), y_range=(-10, 10), marker_scale=20, k_top = None):
     """
     Compute the 2D coordinates for exploration steps of a User based on angle and distance (delta_r),
@@ -260,25 +224,29 @@ def compute_exploration_points(user, starting_point=None, x_range=(-10, 10), y_r
 
 import matplotlib.pyplot as plt
 
-def plot_mobility_visualization(user, rg=False, title = None):
+def plot_mobility_visualization(user_history, venue_history, stats = None, sizes = 20, rg=False, title = None):
     """Plots places visited by the users in the space with trajectories"""
 
-    x, y , sizes, x_traj, y_traj = compute_exploration_points(user,
-                                                                starting_point=(0,0),
-                                                                marker_scale=20)
+
+    x,y = venue_history["Venue_x_coord"].to_numpy(), venue_history["Venue_y_coord"].to_numpy()
+    marker_sizes = venue_history["Number of visits"].to_numpy() * sizes
+    x_traj, y_traj = user_history["Destination_x_coord"].to_numpy(), user_history["Destination_y_coord"].to_numpy()
+    #Adding starting position
+    x_traj, y_traj = np.insert(x_traj, 0, 0), np.insert(y_traj, 0, 0)
     
     _, ax = plt.subplots()  
 
-    ax.scatter(x, y, s=sizes, c='blue', alpha=0.6)
+    ax.scatter(x, y, s=marker_sizes, c='blue', alpha=0.6)
     ax.plot(x_traj, y_traj, color='red', linewidth=1, alpha=0.7)
 
-    if rg:
-        r_gyr = user.radius_of_gyration
-        r_cm = user.center_of_mass
+    if stats is not None:
+        r_gyr = stats.query('metric == "radius of gyration"')['value'].iloc[0]
+        cm_x = stats.query('metric == "x_center of mass"')['value'].iloc[0]
+        cm_y = stats.query('metric == "y_center of mass"')['value'].iloc[0]
 
-        ax.scatter(*r_cm, c="purple", alpha=0.6, s=50, zorder=3)
+        ax.scatter(cm_x,cm_y, c="purple", alpha=0.6, s=50, zorder=3)
         circle = plt.Circle(
-            tuple(r_cm),
+            (cm_x, cm_y),
             r_gyr,
             facecolor=(0.6, 0, 0.8, 0.2),
             edgecolor=(0.4, 0, 0.6, 0.8), 
@@ -330,42 +298,68 @@ def convert_histories_to_df(user):
         user.venue_history = pd.DataFrame(data_venue, columns=columns_venue)
 
 
-def plot_rg_distribution(rg_list, num_bins=30, title = None):
+def plot_rg_distribution(rg_list, bins_per_decade=4, title=None):
     """
-    Plot the distribution of radius of gyration (R_g) values.
-
-    Parameters
-    ----------
-    rg_list : list of float
-        List of radius of gyration values for the users.
-    bins : int, optional
-        Number of bins to use in the histogram. Default is 30.
-
-    Returns
-    -------
-    None
+    Showing radius of gyration distribution
     """
+
     rg_array = np.array(rg_list)
+    rg_array = rg_array[rg_array > 0]   # evita zeri
 
-    number_of_users = len(rg_array)
-
-    #Creating logaritmic binning
-    min_rg = rg_array[rg_array > 0].min()  #Avoiding eventual zero
+    min_rg = rg_array.min()
     max_rg = rg_array.max()
-    bins = np.logspace(0.9*np.log10(min_rg), 1.1*np.log10(max_rg), num_bins)
-        #Those numbers, 0.9 and 1.1 save us from border problems
+
+    log_min = np.log10(min_rg)
+    log_max = np.log10(max_rg)
+
+    #Avoiding boundary problems using a margin
+    margin = 0.05
+    log_min -= margin
+    log_max += margin
+
+    num_decades = log_max - log_min
+    num_bins = int(np.ceil(num_decades * bins_per_decade))
+
+    # Creation of logarithmic bins
+    bins = np.logspace(log_min, log_max, num_bins + 1)
+
+    # frequencies
+    counts, edges = np.histogram(rg_array, bins=bins)
+
+    # bin center
+    centers = np.sqrt(edges[:-1] * edges[1:])
+
+    # normailization
+    widths = np.diff(edges)
+    density = counts / widths / len(rg_array)
+
+    mask = density > 0
+    centers_filtered = centers[mask]
+    density_filtered = density[mask]
+    #counts_filtered = counts[mask]
+    #widths_filtered = widths[mask]
+
+    #print(f"\nNumero totale di punti: {len(rg_array)}")
+    #print(f"Numero di bin con dati: {len(centers_filtered)}")
+    #print("\nDettagli bin:")
+    #for i in range(len(centers_filtered)):
+        #print(f"Bin {i+1}: center={centers_filtered[i]:.2f}, "
+          #f"counts={counts_filtered[i]}, "
+          #f"width={widths_filtered[i]:.2f}, "
+          #f"density={density_filtered[i]:.4f}")
+
+    plt.loglog(centers_filtered, density_filtered, "o", markersize=5)
 
     plt.figure(figsize=(8, 6))
+    plt.loglog(centers_filtered, density_filtered, "o", markersize=5)
 
-    plt.hist(rg_array, bins=bins, edgecolor='black', alpha=0.7)
-    plt.xscale('log') 
-    plt.yscale('log')  
     plt.xlabel("Radius of gyration")
-    plt.ylabel("Frequency")
+    plt.ylabel("Density")
     if title:
-        plt.title(title,fontsize=6)
-    #plt.title(f"Distribution of Radius of Gyration for {number_of_users} users")
-    plt.grid(True, linestyle='--', alpha=0.4)
+        plt.title(title, fontsize=8)
+
+    plt.grid(True, linestyle="--", alpha=0.4)
+    plt.tight_layout()
     filepath_save_plot("plots")
 
 def plot_frequency_distribution(venue_history, gamma, title = None):         
@@ -376,7 +370,7 @@ def plot_frequency_distribution(venue_history, gamma, title = None):
 
     plt.figure(figsize=(8,6))
 
-    plt.scatter(x, y, color='blue', label='Data', s=50)
+    plt.scatter(x, y, color='blue', label='data', s=50)
 
     x_fit = np.linspace(min(x), max(x), 100)
     y_fit = x_fit**(-1-gamma)
@@ -396,7 +390,8 @@ def plot_frequency_distribution(venue_history, gamma, title = None):
     filepath_save_plot("plots")
 
 def plot_two_radius_vs_radius(rg_list, two_rg_list, title = None):
-    
+
+    plt.figure(figsize=(8, 6))
     plt.scatter(rg_list, two_rg_list)
     plt.xlabel("Radius of Gyration")
     plt.ylabel("2-Radius of Gyration")
@@ -415,3 +410,176 @@ def build_plot_title(base_title, sim_params):
     param_str = ", ".join(f"{k}={v}" for k, v in sim_params.items())
     return f"{base_title} ({param_str})"
         
+
+def polar_to_cartesian (delta_r, angle):
+    x = delta_r*np.cos(angle)
+    y = delta_r*np.sin(angle)
+    return (x,y)
+
+
+def load_simulations_parquet(filters=None, base_folder=None):
+    """
+    Load simulation data from Parquet based on parameter filters.
+
+    Args:
+        filters (dict): dict of filters, e.g.
+                        {"ro": 0.6, "b_param": 0.8, "time": 100}
+                        Values = None → ignored.
+        base_folder (str): root folder, default = Data at project root.
+
+    Returns:
+        List of tuples: (user_history_df, venue_history_df, stats_df or None)
+    """
+
+    # Default: empty filters
+    if filters is None:
+        filters = {}
+
+    # Remove filters with None (ignore them)
+    filters = {k: v for k, v in filters.items() if v is not None}
+
+    # Default base folder
+    if base_folder is None:
+        project_root = os.path.dirname(os.path.dirname(
+            os.path.abspath(inspect.getfile(inspect.currentframe()))
+        ))
+        base_folder = os.path.join(project_root, "Data")
+
+    if not os.path.exists(base_folder):
+        return []
+
+    loaded_users = []
+
+    # Map filter keys to folder keys
+    key_map = {
+        "a_param": "a",
+        "b_param": "b",
+        "ro": "ro",
+        "gamma": "gamma",
+        "time": "time"
+    }
+
+    # Iterate over simulation folders
+    for folder in os.listdir(base_folder):
+        folder_path = os.path.join(base_folder, folder)
+        if not os.path.isdir(folder_path):
+            continue
+
+        # Parse folder name
+        parts = folder.split("_")
+        if len(parts) % 2 != 0:
+            continue  # malformed
+
+        params = {}
+        try:
+            for i in range(0, len(parts), 2):
+                k, v = parts[i], parts[i + 1]
+                params[k] = v
+        except Exception:
+            continue
+
+        # Convert params to Python types
+        converted = {}
+        for k, v in params.items():
+            if k == "time":
+                converted[k] = int(v)
+            else:
+                try:
+                    converted[k] = float(v)
+                except ValueError:
+                    converted[k] = v  # fallback
+
+        # Apply filters
+        match = True
+        for f_key, f_value in filters.items():
+            folder_key = key_map[f_key]
+            if converted.get(folder_key) != f_value:
+                match = False
+                break
+
+        if not match:
+            continue
+
+        # Load data inside the run folders
+        for run_folder in os.listdir(folder_path):
+            run_path = os.path.join(folder_path, run_folder)
+            if not os.path.isdir(run_path):
+                continue
+
+            # Gather all users in this run
+            users_in_run = {}
+
+            for file in os.listdir(run_path):
+                full = os.path.join(run_path, file)
+
+                if file.endswith("_history.parquet"):
+                    idx = file.split("_")[1]
+                    users_in_run.setdefault(idx, {})["user_history"] = pd.read_parquet(full)
+
+                elif file.endswith("_venue.parquet"):
+                    idx = file.split("_")[1]
+                    users_in_run.setdefault(idx, {})["venue_history"] = pd.read_parquet(full)
+
+                elif file.endswith("_stats.parquet"):
+                    idx = file.split("_")[1]
+                    users_in_run.setdefault(idx, {})["stats"] = pd.read_parquet(full)
+
+            # Append valid users
+            for d in users_in_run.values():
+                uh = d.get("user_history")
+                vh = d.get("venue_history")
+                st = d.get("stats", None)
+                if uh is not None and vh is not None:
+                    loaded_users.append((uh, vh, st))
+
+    return loaded_users
+
+def get_trajectory_arrays(user, k_top=None):
+    """
+    Extract the trajectory coordinates from user_history as NumPy arrays,
+    optionally filtering only the top-k most visited venues.
+
+    Parameters
+    ----------
+    user : User
+        An object with user_history and venue_history as lists of lists.
+    k_top : int or None
+        Number of top visited venues to include. If None, include all.
+
+    Returns
+    -------
+    x_traj : np.ndarray
+        X coordinates of the trajectory (starts with 0).
+    y_traj : np.ndarray
+        Y coordinates of the trajectory (starts with 0).
+    """
+    header = user.user_history[0]
+    data = user.user_history[1:]
+    idx_dest_x = header.index("Destination_x_coord")
+    idx_dest_y = header.index("Destination_y_coord")
+    idx_dest_name = header.index("Destination")
+
+    dest_x = np.array([row[idx_dest_x] for row in data], dtype=float)
+    dest_y = np.array([row[idx_dest_y] for row in data], dtype=float)
+    trajectory = [row[idx_dest_name] for row in data]
+
+    if k_top is not None:
+        venue_header = user.venue_history[0]
+        venue_data = user.venue_history[1:]
+        idx_venue_name = venue_header.index("Venue_name")
+        idx_visits = venue_header.index("Number of visits")
+
+        venue_visits = {row[idx_venue_name]: row[idx_visits] for row in venue_data}
+        top_k_venues = sorted(venue_visits, key=venue_visits.get, reverse=True)[:k_top]
+    else:
+        top_k_venues = None 
+
+    x_traj = [0]  
+    y_traj = [0]
+
+    for i, venue in enumerate(trajectory):
+        if (top_k_venues is None) or (venue in top_k_venues):
+            x_traj.append(dest_x[i])
+            y_traj.append(dest_y[i])
+
+    return np.array(x_traj), np.array(y_traj)
