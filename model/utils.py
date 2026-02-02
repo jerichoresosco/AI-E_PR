@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 import os
 import inspect
 import model.user
+import scipy.stats
 
 import logging
 logger = logging.getLogger(__name__)
@@ -75,7 +76,7 @@ def spatial_power_law_sampling(par = 0.55, min_val = 1, max_val = 100000, n_samp
     #logger.info("Spatial sampling...")
     return power_law_sampling(par = par, min_val = min_val, max_val = max_val, n_samples = n_samples)
 
-def temporal_power_law_sampling( par = 0.8, min_val = 300, max_val = 61200, n_samples = 1):    
+def temporal_power_law_sampling( par = 0.8, min_val = 1, max_val = 61200, n_samples = 1):    
     """
     Wrapper funtion for power_law_sampling from a temporal distribution 
 
@@ -138,94 +139,32 @@ def filepath_save_plot(folder = "test_plots", name: str = None):
     plt.savefig(filepath)
     plt.close()
 
-
-def compute_exploration_points(user, starting_point=None, x_range=(-10, 10), y_range=(-10, 10), marker_scale=20, k_top = None):
+def plot_mobility_visualization(user_history, venue_history, stats = None, sizes = 20, rg=False, title = None):
     """
-    Compute the 2D coordinates for exploration steps of a User based on angle and distance (delta_r),
-    and size the markers according to the number of visits in venue_history.
+    Visualizes the user mobility trajectory and visited venues.
 
     Parameters
     ----------
-    user : User
-        An instance of the User class containing user_history and venue_history as DataFrames.
-    starting_point : tuple, optional
-        (x0, y0) coordinates to start from. If None, a random starting point is generated
-        within the provided x_range and y_range.
-    x_range : tuple of float, default (-10, 10)
-        Range for random X coordinate if starting_point is None.
-    y_range : tuple of float, default (-10, 10)
-        Range for random Y coordinate if starting_point is None.
-    marker_scale : float, default 20
-        Scaling factor for marker sizes according to number of visits.
-
+    user_history : pandas.DataFrame
+        DataFrame containing the user's trajectory with columns including 'Destination_x_coord',
+        'Destination_y_coord', and 'Clock'.
+    venue_history : pandas.DataFrame
+        DataFrame containing visited venues with columns 'Venue_x_coord', 'Venue_y_coord',
+        and 'Number of visits'.
+    stats : pandas.DataFrame, optional
+        DataFrame containing user statistics, e.g., radius of gyration and center of mass.
+        If provided, the center of mass and radius of gyration are plotted.
+    sizes : int, default=20
+        Scaling factor for marker sizes representing venue visit frequency.
+    rg : bool, optional
+        If True, indicates whether to plot radius of gyration (default: False).
+    title : str, optional
+        Title for the plot.
+    
     Returns
     -------
-    x : np.ndarray
-        X coordinates of exploration points.
-    y : np.ndarray
-        Y coordinates of exploration points.
-    marker_sizes : np.ndarray
-        Marker sizes proportional to the number of visits for each venue.
+    None
     """
-
-    # Determine starting point
-    if starting_point is None:
-        x0 = np.random.uniform(*x_range)
-        y0 = np.random.uniform(*y_range)
-    else:
-        x0, y0 = starting_point
-
-    # Filter only exploration steps
-    explore_df = user.user_history[user.user_history["State(E/R)"] == "E"]
-
-    if explore_df.empty:
-        # No exploration steps
-        logger.warning("No exploration is taking place! Impossible to compute exploration points")
-        return np.array([]), np.array([]), np.array([])
-
-    # Compute X and Y coordinates using polar to Cartesian conversion
-    x_venue, y_venue = np.array([x0]),np.array([y0])
-    for row in explore_df.itertuples():
-
-        x = x_venue[row.Starting_Venue - 1] + row.Distance * np.cos(row.Angle) #-1 because starting_venue[0]=1
-        y = y_venue[row.Starting_Venue - 1] + row.Distance * np.sin(row.Angle) # and not = 0
-        x_venue = np.append(x_venue, x)
-        y_venue = np.append(y_venue, y)
-
-    # Map number of visits from venue_history
-    number_visits = user.venue_history["Number of visits"].to_numpy()
-
-    # Marker sizes proportional to number of visits
-    marker_sizes = number_visits * marker_scale
-
-    x_traj = np.array([])
-    y_traj = np.array([])
-
-    if k_top is not None:
-        # Get the top-k venues by number of visits
-        top_k_venues = (
-            user.venue_history
-            .sort_values("Number of visits", ascending=False)
-            .head(k_top)["Venue"]
-            .to_numpy()
-            )
-    else:
-        top_k_venues = None
-        
-    trajectory = trajectory_from_user(user)
-    for position in (trajectory):
-        if (top_k_venues is None) or (position in top_k_venues):
-            index = position - 1  #x_venue 0-th element is 1
-            x_traj = np.append(x_traj, x_venue[index])
-            y_traj = np.append(y_traj, y_venue[index])
-
-    return x_venue, y_venue, marker_sizes, x_traj, y_traj
-
-
-import matplotlib.pyplot as plt
-
-def plot_mobility_visualization(user_history, venue_history, stats = None, sizes = 20, rg=False, title = None):
-    """Plots places visited by the users in the space with trajectories"""
 
 
     x,y = venue_history["Venue_x_coord"].to_numpy(), venue_history["Venue_y_coord"].to_numpy()
@@ -236,7 +175,7 @@ def plot_mobility_visualization(user_history, venue_history, stats = None, sizes
     
     _, ax = plt.subplots()  
 
-    ax.scatter(x, y, s=marker_sizes, c='blue', alpha=0.6)
+    ax.scatter(x, y, s=marker_sizes, marker='x', c='blue', alpha=0.6)
     ax.plot(x_traj, y_traj, color='red', linewidth=1, alpha=0.7)
 
     if stats is not None:
@@ -261,81 +200,33 @@ def plot_mobility_visualization(user_history, venue_history, stats = None, sizes
 
     filepath_save_plot("plots")
 
-    
-def trajectory_from_user(user):
-
-    """
-    Calculate the trajectory of a user
-
-    Parameters:
-    -----------
-    user: the user whom calculation is needed (User)
-     
-    Returns:
-    --------
-    the trajectory of the user (Tuple(np.array, np.array)) """
-
-    trajectory_without_starting_position = user.user_history["Destination"].to_numpy()
-    trajectory = np.insert(trajectory_without_starting_position, 0, 1) #Adding 1 because 1 is starting position
-    
-
-    return trajectory
-
-
-def convert_histories_to_df(user):
-        """
-        Convert the user history and venue history lists into Pandas DataFrames.        
-
-        """
-        #User_history
-        columns_user = user.user_history[0]   
-        data_user = user.user_history[1:]     
-        user.user_history = pd.DataFrame(data_user, columns=columns_user)
-
-        #venue_history
-        columns_venue = user.venue_history[0]
-        data_venue = user.venue_history[1:]    
-        user.venue_history = pd.DataFrame(data_venue, columns=columns_venue)
-
 
 def plot_rg_distribution(rg_list, bins_per_decade=4, title=None):
     """
-    Showing radius of gyration distribution
+    Plot the distribution of radius of gyration values on a log-log scale.
+
+    This function creates a histogram of the radius of gyration (rg) values using
+    logarithmic binning and plots the density on a log-log scale. It filters out
+    zero values and uses a dotted histogram approach for better visualization.
+
+    Parameters
+    ----------
+    rg_list : list or array-like
+        List of radius of gyration values to plot.
+    bins_per_decade : int, optional (default=4)
+        Number of bins per decade for logarithmic binning.
+    title : str, optional (default=None)
+        Title for the plot. If None, no title is set.
+
+    Returns
+    -------
+    None
+        The function generates and saves a plot but does not return any value.
     """
 
     rg_array = np.array(rg_list)
-    rg_array = rg_array[rg_array > 0]   # evita zeri
-
-    min_rg = rg_array.min()
-    max_rg = rg_array.max()
-
-    log_min = np.log10(min_rg)
-    log_max = np.log10(max_rg)
-
-    #Avoiding boundary problems using a margin
-    margin = 0.05
-    log_min -= margin
-    log_max += margin
-
-    num_decades = log_max - log_min
-    num_bins = int(np.ceil(num_decades * bins_per_decade))
-
-    # Creation of logarithmic bins
-    bins = np.logspace(log_min, log_max, num_bins + 1)
-
-    # frequencies
-    counts, edges = np.histogram(rg_array, bins=bins)
-
-    # bin center
-    centers = np.sqrt(edges[:-1] * edges[1:])
-
-    # normailization
-    widths = np.diff(edges)
-    density = counts / widths / len(rg_array)
-
-    mask = density > 0
-    centers_filtered = centers[mask]
-    density_filtered = density[mask]
+    centers_filtered, density_filtered = dotted_histogram(rg_array)
+     
     #counts_filtered = counts[mask]
     #widths_filtered = widths[mask]
 
@@ -362,7 +253,27 @@ def plot_rg_distribution(rg_list, bins_per_decade=4, title=None):
     plt.tight_layout()
     filepath_save_plot("plots")
 
-def plot_frequency_distribution(venue_history, gamma, title = None):         
+def plot_frequency_distribution(venue_history, gamma, title = None):   
+    """
+    Plot the frequency distribution of venue visits on a log-log scale.
+
+    This function creates a rank-frequency plot of the number of visits per venue,
+    sorted in descending order. It also overlays a power-law fit line for comparison.
+
+    Parameters
+    ----------
+    venue_history : pandas.DataFrame
+        DataFrame containing venue visit data with a 'Number of visits' column.
+    gamma : float
+        Exponent for the power-law fit line (f(x) = x^(-1-gamma)).
+    title : str, optional (default=None)
+        Title for the plot. If None, no title is set.
+
+    Returns
+    -------
+    None
+        The function generates and saves a plot but does not return any value.
+    """      
 
     freq = venue_history['Number of visits'].sort_values(ascending=False).reset_index(drop=True)
     x = freq.index.values + 1 #+1 in order to start from 1, so max value is first rank, not 0
@@ -390,9 +301,29 @@ def plot_frequency_distribution(venue_history, gamma, title = None):
     filepath_save_plot("plots")
 
 def plot_two_radius_vs_radius(rg_list, two_rg_list, title = None):
+    """
+    Plot the relationship between radius of gyration and 2-radius of gyration.
+
+    This function creates a scatter plot comparing the standard radius of gyration
+    with the 2-radius of gyration for a set of data points.
+
+    Parameters
+    ----------
+    rg_list : list or array-like
+        List of radius of gyration values.
+    two_rg_list : list or array-like
+        List of 2-radius of gyration values.
+    title : str, optional (default=None)
+        Title for the plot. If None, no title is set.
+
+    Returns
+    -------
+    None
+        The function generates and saves a plot but does not return any value.
+    """
 
     plt.figure(figsize=(8, 6))
-    plt.scatter(rg_list, two_rg_list)
+    plt.scatter(rg_list, two_rg_list,s=5)
     plt.xlabel("Radius of Gyration")
     plt.ylabel("2-Radius of Gyration")
     if title:
@@ -402,7 +333,22 @@ def plot_two_radius_vs_radius(rg_list, two_rg_list, title = None):
 
 def build_plot_title(base_title, sim_params):
     """
-    Create a plot title using a base title and a dictionary of simulation parameters.
+    Build a plot title by combining a base title with simulation parameters.
+
+    This function constructs a descriptive title for plots by appending simulation
+    parameters in a formatted string.
+
+    Parameters
+    ----------
+    base_title : str
+        The base title for the plot.
+    sim_params : dict
+        Dictionary of simulation parameters to include in the title.
+
+    Returns
+    -------
+    str
+        The constructed title string.
     """
     if not sim_params:
         return base_title
@@ -412,6 +358,24 @@ def build_plot_title(base_title, sim_params):
         
 
 def polar_to_cartesian (delta_r, angle):
+    """
+    Convert polar coordinates to Cartesian coordinates.
+
+    This function transforms a distance and angle in polar coordinates
+    to x and y coordinates in Cartesian space.
+
+    Parameters
+    ----------
+    delta_r : float
+        The radial distance from the origin.
+    angle : float
+        The angle in radians from the positive x-axis.
+
+    Returns
+    -------
+    tuple of float
+        A tuple (x, y) representing the Cartesian coordinates.
+    """
     x = delta_r*np.cos(angle)
     y = delta_r*np.sin(angle)
     return (x,y)
@@ -419,16 +383,25 @@ def polar_to_cartesian (delta_r, angle):
 
 def load_simulations_parquet(filters=None, base_folder=None):
     """
-    Load simulation data from Parquet based on parameter filters.
+    Load simulation data from Parquet files based on parameter filters.
 
-    Args:
-        filters (dict): dict of filters, e.g.
-                        {"ro": 0.6, "b_param": 0.8, "time": 100}
-                        Values = None → ignored.
-        base_folder (str): root folder, default = Data at project root.
+    This function scans a directory structure for simulation data stored in Parquet format,
+    applying filters to select specific simulation runs. It loads user history, venue history,
+    and optional statistics for each matching simulation.
 
-    Returns:
-        List of tuples: (user_history_df, venue_history_df, stats_df or None)
+    Parameters
+    ----------
+    filters : dict, optional (default=None)
+        Dictionary of filters to apply, e.g., {"ro": 0.6, "b_param": 0.8, "time": 100}.
+        Keys should match parameter names; None values are ignored.
+    base_folder : str, optional (default=None)
+        Root folder containing simulation data. Defaults to "Data" in the project root.
+
+    Returns
+    -------
+    list of tuples
+        List of tuples, each containing (user_history_df, venue_history_df, stats_df).
+        stats_df may be None if not available.
     """
 
     # Default: empty filters
@@ -536,22 +509,24 @@ def load_simulations_parquet(filters=None, base_folder=None):
 
 def get_trajectory_arrays(user, k_top=None):
     """
-    Extract the trajectory coordinates from user_history as NumPy arrays,
-    optionally filtering only the top-k most visited venues.
+    Extract trajectory coordinates from user history as NumPy arrays.
+
+    This function processes the user's history data to extract x and y coordinates
+    of the trajectory, optionally filtering to include only the top-k most visited venues.
 
     Parameters
     ----------
     user : User
         An object with user_history and venue_history as lists of lists.
-    k_top : int or None
-        Number of top visited venues to include. If None, include all.
+    k_top : int, optional (default=None)
+        Number of top visited venues to include. If None, include all venues.
 
     Returns
     -------
     x_traj : np.ndarray
-        X coordinates of the trajectory (starts with 0).
+        X coordinates of the trajectory, starting with 0.
     y_traj : np.ndarray
-        Y coordinates of the trajectory (starts with 0).
+        Y coordinates of the trajectory, starting with 0.
     """
     header = user.user_history[0]
     data = user.user_history[1:]
@@ -583,3 +558,214 @@ def get_trajectory_arrays(user, k_top=None):
             y_traj.append(dest_y[i])
 
     return np.array(x_traj), np.array(y_traj)
+
+def plot_S_over_time(user_history_list, title = None, bins_per_decade=4, k = None):
+    """
+    Plot the exploration statistic S(t) over time on a log-log scale.
+
+    This function computes and plots the cumulative number of unique venues visited
+    (S(t)) as a function of time (clock), using logarithmic binning for averaging.
+
+    Parameters
+    ----------
+    user_history_list : list of pandas.DataFrame
+        List of DataFrames containing user history with 'Clock' and 'State(E/R)' columns.
+    title : str, optional (default=None)
+        Title for the plot. If None, no title is set.
+    bins_per_decade : int, optional (default=4)
+        Number of bins per decade for logarithmic binning.
+    k : int, optional (default=None)
+        Number of user histories to include. If None, include all.
+
+    Returns
+    -------
+    None
+        The function generates and saves a plot but does not return any value.
+    """
+    if k is not None:
+        dfs_to_plot = user_history_list[:k]
+    else:
+        dfs_to_plot = user_history_list
+
+    plt.figure(figsize=(8,5))
+    
+    clocks = np.array([])
+    s_values = np.array([])
+
+    for df in dfs_to_plot:
+        e_rows = df[df['State(E/R)'] == 'E'].copy()
+        
+        clocks_temp = e_rows['Clock']
+        s_values_temp = range(2, 2 + len(clocks_temp))
+
+        clocks = np.append(clocks, clocks_temp)
+        s_values = np.append(s_values, s_values_temp)
+
+    min_clocks = clocks.min()
+    max_clocks = clocks.max()
+
+    log_min = np.log10(min_clocks)
+    log_max = np.log10(max_clocks)
+
+    #Avoiding boundary problems using a margin
+    margin = 0.05
+    log_min -= margin
+    log_max += margin
+
+    num_decades = log_max - log_min
+    num_bins = int(np.ceil(num_decades * bins_per_decade))
+   
+    bins_edges = np.logspace(np.log10(min_clocks), np.log10(max_clocks), num_bins)
+    y_mean, edges, _ = scipy.stats.binned_statistic(clocks, s_values, statistic='mean', bins=bins_edges)
+    centers = np.sqrt(edges[:-1] * edges[1:])      #geometric metric for log plot
+
+    plt.figure(figsize=(7,5))
+
+    plt.scatter(centers, y_mean, marker='o')
+    plt.xscale("log")
+    plt.yscale("log")
+    plt.xlabel("Clock")
+    plt.ylabel("S(t)")
+    plt.grid(True, which="both", ls="--", alpha=0.5)
+    if title:
+        plt.title(title, fontsize=10)
+    #plt.legend()
+    
+    filepath_save_plot(folder="plots")
+
+
+
+def dotted_histogram(numpy_array, bins_per_decade=4):
+    """
+    Compute a logarithmic histogram with density normalization.
+
+    This function creates logarithmically spaced bins for the input array,
+    computes frequencies, and normalizes to density. It filters out zero values
+    and returns only bins with positive density.
+
+    Parameters
+    ----------
+    numpy_array : array-like
+        Input array of values to histogram (must be positive).
+    bins_per_decade : int, optional (default=4)
+        Number of bins per decade for logarithmic spacing.
+
+    Returns
+    -------
+    centers_filtered : np.ndarray
+        Geometric centers of the bins with positive density.
+    density_filtered : np.ndarray
+        Normalized density values for the bins.
+    """
+    array = numpy_array[numpy_array > 0]   # avoiding zeros
+
+    min_array = array.min()
+    max_array = array.max()
+
+    log_min = np.log10(min_array)
+    log_max = np.log10(max_array)
+
+    #Avoiding boundary problems using a margin
+    margin = 0.05
+    log_min -= margin
+    log_max += margin
+
+    num_decades = log_max - log_min
+    num_bins = int(np.ceil(num_decades * bins_per_decade))
+
+    # Creation of logarithmic bins
+    bins = np.logspace(log_min, log_max, num_bins + 1)
+
+    # frequencies
+    counts, edges = np.histogram(array, bins=bins)
+
+    # bin logarithmic center
+    centers = np.sqrt(edges[:-1] * edges[1:])
+
+    # normailization
+    widths = np.diff(edges)
+    density = counts / widths / len(array)
+
+    mask = density > 0
+    centers_filtered = centers[mask]
+    density_filtered = density[mask]
+
+    return centers_filtered, density_filtered
+
+
+def plot_r_gyr_over_time(user_history_list, title=None, bins_per_decade=4, k=None):
+    """
+    Plot the cumulative radius of gyration r_gyr(t) over time on a log scale.
+
+    This function computes the radius of gyration for each time step in the user histories
+    and plots the mean r_gyr(t) using logarithmic binning.
+
+    Parameters
+    ----------
+    user_history_list : list of pandas.DataFrame
+        List of DataFrames containing user history with 'Clock', 'Destination_x_coord',
+        and 'Destination_y_coord' columns.
+    title : str, optional (default=None)
+        Title for the plot. If None, no title is set.
+    bins_per_decade : int, optional (default=4)
+        Number of bins per decade for logarithmic binning.
+    k : int, optional (default=None)
+        Number of user histories to include. If None, include all.
+
+    Returns
+    -------
+    None
+        The function generates and saves a plot but does not return any value.
+    """
+    
+    if k is not None:
+        dfs_to_plot = user_history_list[:k]
+    else:
+        dfs_to_plot = user_history_list
+
+    clocks = np.array([])
+    r_gyr_values = np.array([])
+
+    for df in dfs_to_plot:
+        clocks_temp = df['Clock'].values  
+        r_gyr_temp = []
+        for i in range(len(df)):
+            # seleziona tutte le righe fino alla riga corrente inclusa
+            traj_x = np.concatenate(([0], df.iloc[:i+1]['Destination_x_coord'].values))
+            traj_y = np.concatenate(([0], df.iloc[:i+1]['Destination_y_coord'].values))
+
+            x_cm = np.mean(traj_x)
+            y_cm = np.mean(traj_y)
+            r_gyr_val = np.sqrt(np.mean((traj_x - x_cm)**2 + (traj_y - y_cm)**2))
+            r_gyr_temp.append(r_gyr_val)
+
+        clocks = np.append(clocks, clocks_temp)
+        r_gyr_values = np.append(r_gyr_values, r_gyr_temp)
+
+    # bin logaritmici
+    min_clocks = clocks.min()
+    max_clocks = clocks.max()
+
+    log_min = np.log10(min_clocks) - 0.05
+    log_max = np.log10(max_clocks) + 0.05
+    num_decades = log_max - log_min
+    num_bins = int(np.ceil(num_decades * bins_per_decade))
+    bins_edges = np.logspace(log_min, log_max, num_bins)
+
+    r_gyr_mean, edges, _ = scipy.stats.binned_statistic(clocks, r_gyr_values, statistic='mean', bins=bins_edges)
+    centers = np.sqrt(edges[:-1] * edges[1:])  # centro geometrico per bin log
+
+    # plot
+    plt.figure(figsize=(8,5))
+    plt.scatter(centers, r_gyr_mean, marker='o')
+    plt.xscale("log")
+    # plt.yscale("log")  # opzionale
+    plt.xlabel("Clock")
+    plt.ylabel("Raggio di girazione r_gyr(t)")
+    plt.grid(True, which="both", ls="--", alpha=0.5)
+    if title:
+        plt.title(title, fontsize=10)
+    
+    plt.tight_layout()
+    filepath_save_plot("plots")
+

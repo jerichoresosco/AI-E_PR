@@ -11,6 +11,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 class Simulation:
+    
     def __init__(self, ro, gamma, a_param, b_param, user_number, time, plots_to_generate=None, sim_params=None, filters = None):
                  #ro_filter, gamma_filter, a_param_filter, b_param_filter, time_filter):
         self.ro = ro
@@ -24,6 +25,7 @@ class Simulation:
         self.user = None
         self.rg = None
         self.users_list = []
+        self.user_history_list = []
         self.rg_list = []
         self.two_rg_list = []
         self.filters = filters
@@ -65,8 +67,7 @@ class Simulation:
                 self.rg_list.append(rg_value) 
                 self.two_rg_list.append(rg_two_value)
 
-        print(self.last_venue_history)
-        pprint(self.last_user_history)
+            self.user_history_list.append(entry[0])
 
 
 
@@ -150,7 +151,20 @@ class Simulation:
             title=model.utils.build_plot_title("Two-RG vs RG", self.sim_params)
             )
 
+        if "s_over_time" in self.plots_to_generate:
+            model.utils.plot_S_over_time(
+            self.user_history_list,
+            bins_per_decade=10,
+            title=model.utils.build_plot_title("S over time", self.sim_params),
+            k = 100
+            )
 
+        if "rg_ over_time" in self.plots_to_generate:
+            model.utils.plot_r_gyr_over_time(
+                self.user_history_list,
+                title=None,
+                bins_per_decade=100,
+                k=100)
         
             
  

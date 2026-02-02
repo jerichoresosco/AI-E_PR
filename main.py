@@ -18,18 +18,18 @@ def main():
     # 1) Choose mode
     # ==========================================================
 
-    mode = "load"     # options:
+    mode = "simulate"     # options:
                                    # "simulate"
                                    # "load"
 
     # Parameters for simulation
     simulation_params = {
         "ro": 0.1,
-        "gamma": 0.3,
-        "a_param": 0.75,
-        "b_param": 0.6,
-        "user_number": 5,
-        "time": 100000
+        "gamma": 0.2,
+        "a_param": 0.5,
+        "b_param": 0.7,
+        "user_number": 1,
+        "time": 1000000
     }
 
     # Filters for loading saved datasets
@@ -37,17 +37,19 @@ def main():
     #Ignoring a filter --> None
     filters = {
         "ro": 0.1,
-        "gamma": 0.3,
-        "a_param": 0.75,
-        "b_param": 0.6,
-        "time": 100000
+        "gamma": 0.2,
+        "a_param": 0.5,
+        "b_param": 0.7,
+        "time": 1000000
     }
 
     plot_list = [
          #"mobility",
-         "rg_distribution",
+         #"rg_distribution",
          #"freq_distribution",
-         "two_radius"
+         #"two_radius"
+         #"s_over_time"
+         "rg_ over_time"
     ]
 
     start_time = time.time()
