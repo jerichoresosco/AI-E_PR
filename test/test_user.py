@@ -30,87 +30,118 @@ class TestUser(unittest.TestCase):
         self.simulation = copy.deepcopy(self.master_simulation)
 
     def test_user_history_type(self):
-        """Test if the type of user_history after .run is pd.DataFrame"""
-        self.assertIsInstance(self.simulation.user.user_history, pd.DataFrame)
+        """Test if the type of user_history after .run is a list"""
+        self.assertIsInstance(self.simulation.user.user_history, list)
 
     def test_venue_history_type(self):
-        """Test if the type of venue_history after .run is pd.DataFrame"""
-        self.assertIsInstance(self.simulation.user.venue_history, pd.DataFrame)
+        """Test if the type of venue_history after .run is a list"""
+        self.assertIsInstance(self.simulation.user.venue_history, list)
 
     def test_trajectory_continuity(self):
+
         """Test if there is continuity between positions of user"""
         user_history = self.simulation.user.user_history
         
-        for i in range(len(user_history) - 2):
-            end_pos = user_history.iloc[i+1, 2]     
-            start_pos = user_history.iloc[i+2, 1]    
-            self.assertEqual(end_pos, start_pos)
+        for i in range(1, len(user_history) - 1):
 
-    def test_get_return_venue_simple(self):
-        """Test with a correctness of 99.996% if return venue selects the most probable venue"""
-
-        forced_venue_history = [["Venue", "Number of visits"], [1, 999], [2,1]]
-        self.simulation.user.venue_history = forced_venue_history
-
-        rare_event = 0
-        for i in range(10):
+            #The test funztion is assuming the static position of columns in user_history
+            #It seems to me an excess here the retrive of the index.
+            current_destination = user_history[i][4]
+            current_dest_x = user_history[i][5]
+            current_dest_y = user_history[i][6]
             
-                event = self.simulation.user.get_return_venue()
-                
-                if event == 2:
-                    rare_event += 1
-        self.assertLessEqual(rare_event, 1, msg=f"Test failed: Return velue selection is not working as expected."
-                           f" Number of rare events is {rare_event}")
-        
+            next_departure = user_history[i + 1][1]
+            next_dep_x = user_history[i + 1][2]
+            next_dep_y = user_history[i + 1][3]
+            
+            self.assertEqual(current_destination, next_departure,
+                            f"Discontinuità nel nome della posizione alla riga {i}: "
+                            f"destinazione '{current_destination}' != partenza successiva '{next_departure}'")
+            self.assertEqual(current_dest_x, next_dep_x,
+                            f"Discontinuità nella coordinata X alla riga {i}: "
+                            f"{current_dest_x} != {next_dep_x}")
+            self.assertEqual(current_dest_y, next_dep_y,
+                            f"Discontinuità nella coordinata Y alla riga {i}: "
+                            f"{current_dest_y} != {next_dep_y}")
 
-
-    def test_get_return_venue(self):
+    def test_get_return_position(self):
         """
-        Statistichal test to check if get_return_venue is working properly. The test will
-        be conducted using a hand-written venue_history, checking if actual return values
-        match the theorical prediction. In this test will be choosen a current position which
-        is not inside venue history.
+        Statistical test for get_return_position().
+
+        The theoretical probability is computed analytically for ALL venues,
+        assigning probability 0 to the current venue (the one at position (5,5)).
         """
 
-        venue_history = [
-            ["Venue", "Number of visits"],
-            (1, 5),
-            (2, 4),
-            (3, 3),
-            (4, 2),
-            (5, 1),
+        user = self.simulation.user
+
+        # Override venue history manually
+        user.venue_history = [
+            ["Venue_name", "Number of visits", "Venue_x_coord", "Venue_y_coord"],
+            ["Venue_1", 1, 0, 0],
+            ["Venue_2", 2, 1, 1],
+            ["Venue_3", 3, 2, 2],
+            ["Venue_4", 4, 3, 3],
+            ["Venue_5", 5, 4, 4],
+            ["Venue_6", 6, 5, 5],   # current position
         ]
 
-        self.simulation.user.venue_history = venue_history
-        self.simulation.user.position = 999 #Choosing a current position which will not interfere
+        user._venue_index = {f"Venue_{i}": i for i in range(1,7)}
 
-        # theoretical probability
-        num_visits = np.array([v[1] for v in venue_history[1:]], dtype=float)
-        p_theoretical = num_visits / num_visits.sum()
+        # Current position = Venue_6, must have probability 0
+        user.position = (5,5)
 
-        N = 50_000 #Number of extractions
+        # ALL venues theoretical probability (Venue_6 gets 0)
+        names = [row[0] for row in user.venue_history[1:]]
+        num_visits = np.array([row[1] for row in user.venue_history[1:]], dtype=float)
+
+        # Identify venue to exclude
+        idx_excluded = names.index("Venue_6")
+
+        # Set its weight to zero
+        num_visits_adj = num_visits.copy()
+        num_visits_adj[idx_excluded] = 0
+
+        # Normalize
+        p_theoretical = num_visits_adj / num_visits_adj.sum()
+
+        # Monte Carlo sampling
+        N = 50000
         results = []
 
         for _ in range(N):
-            r = self.simulation.user.get_return_venue()
-            results.append(r)  
+            x, y = user.get_return_position()
 
-        results = np.array(results)
+            # Identify venue name via coordinates
+            for row in user.venue_history[1:]:
+                if (row[2], row[3]) == (x, y):
+                    results.append(row[0])
+                    break
 
-        values, counts = np.unique(results, return_counts=True)
-        p_empirical = counts / N
+        # Empirical probabilities for ALL venues (including Venue_6)
+        unique, counts = np.unique(results, return_counts=True)
+        p_empirical = np.zeros(len(names))
 
-        plt.figure(figsize=(8, 5))
-        plt.bar(values, p_empirical, alpha=0.7, label='Empirical frequency')
-        plt.plot(range(1,len(venue_history)), p_theoretical, 'o-', label='Theoretical probability', markersize=8)
-        plt.xlabel("Venue index in venue_history")
+        for i, name in enumerate(names):
+            if name in unique:
+                p_empirical[i] = counts[list(unique).index(name)] / N
+            else:
+                p_empirical[i] = 0.0  # Venue_6 should land here
+
+        plt.figure(figsize=(8,5))
+        plt.bar(names, p_empirical, alpha=0.7, label="Empirical")
+        plt.plot(names, p_theoretical, "o-", label="Theoretical")
+        plt.title("Distribution of return venues (including excluded one)")
         plt.ylabel("Probability")
-        plt.title("Return venue distribution: empirical vs theoretical")
         plt.legend()
         plt.tight_layout()
         model.utils.filepath_save_plot("test_plots")
 
-        np.testing.assert_allclose(p_empirical, p_theoretical, rtol=0.1, atol=0.01)
+        np.testing.assert_allclose(
+            p_empirical,
+            p_theoretical,
+            rtol=0.1,
+            atol=0.01
+        )
 
 
 if __name__ == "__main__":

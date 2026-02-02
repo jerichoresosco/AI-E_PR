@@ -1,5 +1,6 @@
 import logging
 import model.simulation
+import model.utils
 import time
 from pprint import pprint
 
@@ -12,38 +13,89 @@ logging.basicConfig(
 )
 
 def main():
-    logger.info("Initializing the simulation...")
-    start_time = time.time()
 
-    plot_list = [
-        #"mobility",
-        #"rg_distribution",
-        #"freq_distribution",
-        #"two_radius"
-    ]
+    # ==========================================================
+    # 1) Choose mode
+    # ==========================================================
 
-    params = {
-        "ro": 0.6,
-        "gamma": 0.21,
-        "a_param": 0.55,
-        "b_param": 0.8,
-        "user_number": 700,
-        "time": 52*7*17*3600
+    mode = "load"     # options:
+                                   # "simulate"
+                                   # "load"
+
+    # Parameters for simulation
+    simulation_params = {
+        "ro": 0.1,
+        "gamma": 0.2,
+        "a_param": 0.5,
+        "b_param": 0.7,
+        "user_number": 99,
+        "time": 1000000
     }
 
-    simulation = model.simulation.Simulation(
-        **params,
-        plots_to_generate=plot_list,
-        sim_params=params
-    )
+    # Filters for loading saved datasets
 
-    simulation.run()
-    simulation.plot()
+    #Ignoring a filter --> None
+    filters = {
+        "ro": 0.1,
+        "gamma": 0.2,
+        "a_param": 0.5,
+        "b_param": 0.7,
+        "time": 1000000
+    }
 
-    end_time = time.time()
-    print(f"Elapsed time: {end_time - start_time:.4f} seconds")
-    
+    plot_list = [
+         #"mobility",
+         #"rg_distribution",
+         #"freq_distribution",
+         #"two_radius"
+         #"s_over_time"
+         "rg_ over_time"
+    ]
 
-if __name__ =='__main__':
-    
+    start_time = time.time()
+    logger.info(f"Running mode: {mode}")
+
+    # ==========================================================
+    # MODE 1: SIMULATE 
+    # ==========================================================
+    if mode == "simulate":
+
+        simulation = model.simulation.Simulation(
+            **simulation_params,
+            plots_to_generate=plot_list,
+            sim_params=simulation_params
+        )
+        simulation.run()
+        simulation.save_users_parquet()
+
+
+    # ==========================================================
+    # MODE 2: LOAD
+    # ==========================================================
+    elif mode == "load":
+
+        simulation = model.simulation.Simulation(
+            **simulation_params,
+            plots_to_generate=plot_list,
+            sim_params=simulation_params,
+            filters = filters
+        )
+
+        simulation.load_data()
+        simulation.plot()
+
+
+    else:
+        raise ValueError(
+            "Invalid mode. Use: 'simulate', 'load'"
+        )
+
+    # ==========================================================
+    # END
+    # ==========================================================
+    elapsed = time.time() - start_time
+    print(f"\nElapsed time: {elapsed:.4f} seconds\n")
+
+
+if __name__ == "__main__":
     main()
