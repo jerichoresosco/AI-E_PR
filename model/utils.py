@@ -719,7 +719,7 @@ def plot_r_gyr_over_time(user_history_list, title=None, bins_per_decade=4, k=Non
     """
     
     if k is not None:
-        dfs_to_plot = user_history_list[:k]
+        dfs_to_plot = user_history_list[-k:]
     else:
         dfs_to_plot = user_history_list
 

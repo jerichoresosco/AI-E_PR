@@ -163,7 +163,7 @@ class Simulation:
             model.utils.plot_r_gyr_over_time(
                 self.user_history_list,
                 title=None,
-                bins_per_decade=100,
+                bins_per_decade=10,
                 k=100)
         
             

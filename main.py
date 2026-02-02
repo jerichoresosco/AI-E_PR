@@ -18,7 +18,7 @@ def main():
     # 1) Choose mode
     # ==========================================================
 
-    mode = "simulate"     # options:
+    mode = "load"     # options:
                                    # "simulate"
                                    # "load"
 
@@ -28,7 +28,7 @@ def main():
         "gamma": 0.2,
         "a_param": 0.5,
         "b_param": 0.7,
-        "user_number": 1,
+        "user_number": 99,
         "time": 1000000
     }
 
