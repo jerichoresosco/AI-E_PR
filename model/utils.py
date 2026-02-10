@@ -140,6 +140,7 @@ def filepath_save_plot(folder = "test_plots", name: str = None):
     plt.close()
 
 def plot_mobility_visualization(user_history, venue_history, stats = None, sizes = 20, rg=False, title = None):
+    logger.info("Plotting mobility visualization")
     """
     Visualizes the user mobility trajectory and visited venues.
 
@@ -201,7 +202,8 @@ def plot_mobility_visualization(user_history, venue_history, stats = None, sizes
     filepath_save_plot("plots")
 
 
-def plot_rg_distribution(rg_list, bins_per_decade=4, title=None):
+def plot_rg_distribution(rg_list, title=None):
+    logger.info("Plotting rg distribution")
     """
     Plot the distribution of radius of gyration values on a log-log scale.
 
@@ -254,6 +256,8 @@ def plot_rg_distribution(rg_list, bins_per_decade=4, title=None):
     filepath_save_plot("plots")
 
 def plot_frequency_distribution(venue_history, gamma, title = None):   
+
+    logger.info("Plotting frequency distribution")
     """
     Plot the frequency distribution of venue visits on a log-log scale.
 
@@ -301,6 +305,8 @@ def plot_frequency_distribution(venue_history, gamma, title = None):
     filepath_save_plot("plots")
 
 def plot_two_radius_vs_radius(rg_list, two_rg_list, title = None):
+
+    logger.info("Plotting 2-radius vs radius of gyration")
     """
     Plot the relationship between radius of gyration and 2-radius of gyration.
 
@@ -394,6 +400,8 @@ def load_simulations_parquet(filters=None, base_folder=None):
     filters : dict, optional (default=None)
         Dictionary of filters to apply, e.g., {"ro": 0.6, "b_param": 0.8, "time": 100}.
         Keys should match parameter names; None values are ignored.
+    Special key:
+        - "user_number": int - Number of users to load. Positive = first N, Negative = last N, None = all
     base_folder : str, optional (default=None)
         Root folder containing simulation data. Defaults to "Data" in the project root.
 
@@ -403,13 +411,17 @@ def load_simulations_parquet(filters=None, base_folder=None):
         List of tuples, each containing (user_history_df, venue_history_df, stats_df).
         stats_df may be None if not available.
     """
-
+    logger.info("Loading simulation data")
     # Default: empty filters
     if filters is None:
         filters = {}
 
-    # Remove filters with None (ignore them)
-    filters = {k: v for k, v in filters.items() if v is not None}
+    # Extract user_number from filters (not used for folder matching)
+    user_number = filters.get("user_number", None)
+    
+    # Remove user_number from filters for folder matching, and remove None values
+    filters_for_matching = {key: val for key, val in filters.items() 
+                           if val is not None and key != "user_number"}
 
     # Default base folder
     if base_folder is None:
@@ -432,7 +444,9 @@ def load_simulations_parquet(filters=None, base_folder=None):
         "time": "time"
     }
 
-    # Iterate over simulation folders
+    total_user_count = 0
+    matching_runs = []  # Store (folder_path, run_path, user_indices_list)
+    
     for folder in os.listdir(base_folder):
         folder_path = os.path.join(base_folder, folder)
         if not os.path.isdir(folder_path):
@@ -441,31 +455,31 @@ def load_simulations_parquet(filters=None, base_folder=None):
         # Parse folder name
         parts = folder.split("_")
         if len(parts) % 2 != 0:
-            continue  # malformed
+            continue
 
         params = {}
         try:
             for i in range(0, len(parts), 2):
-                k, v = parts[i], parts[i + 1]
-                params[k] = v
+                key, val = parts[i], parts[i + 1]
+                params[key] = val
         except Exception:
             continue
 
         # Convert params to Python types
         converted = {}
-        for k, v in params.items():
-            if k == "time":
-                converted[k] = int(v)
+        for key, val in params.items():
+            if key == "time":
+                converted[key] = int(val)
             else:
                 try:
-                    converted[k] = float(v)
+                    converted[key] = float(val)
                 except ValueError:
-                    converted[k] = v  # fallback
+                    converted[key] = val
 
-        # Apply filters
+        # Apply filters (excluding user_number)
         match = True
-        for f_key, f_value in filters.items():
-            folder_key = key_map[f_key]
+        for f_key, f_value in filters_for_matching.items():
+            folder_key = key_map.get(f_key, f_key)
             if converted.get(folder_key) != f_value:
                 match = False
                 break
@@ -473,37 +487,113 @@ def load_simulations_parquet(filters=None, base_folder=None):
         if not match:
             continue
 
-        # Load data inside the run folders
+        # Collect user indices in each run
         for run_folder in os.listdir(folder_path):
             run_path = os.path.join(folder_path, run_folder)
             if not os.path.isdir(run_path):
                 continue
-
-            # Gather all users in this run
-            users_in_run = {}
-
+            
+            # Collect unique user indices with their numeric values for sorting
+            user_indices = []
             for file in os.listdir(run_path):
-                full = os.path.join(run_path, file)
-
                 if file.endswith("_history.parquet"):
                     idx = file.split("_")[1]
-                    users_in_run.setdefault(idx, {})["user_history"] = pd.read_parquet(full)
+                    try:
+                        numeric_idx = int(idx)
+                        user_indices.append((numeric_idx, idx))
+                    except ValueError:
+                        user_indices.append((0, idx))  # fallback for non-numeric
+            
+            if len(user_indices) > 0:
+                # Sort by numeric index
+                user_indices.sort(key=lambda x: x[0])
+                user_indices = [idx_str for _, idx_str in user_indices]
+                
+                matching_runs.append((folder_path, run_path, user_indices))
+                total_user_count += len(user_indices)
+    
+    if total_user_count == 0:
+        logger.info("No matching simulation data found")
+        return []
+    
+    # ========== HANDLE user_number PARAMETER ==========
+    load_last = False
+    users_to_load = total_user_count
+    
+    if user_number is not None:
+        if user_number < 0:
+            load_last = True
+            user_number = abs(user_number)
+        users_to_load = min(user_number, total_user_count)
+        
+        if load_last:
+            logger.info(f"Found {total_user_count} users, loading last {users_to_load} users")
+        else:
+            logger.info(f"Found {total_user_count} users, loading first {users_to_load} users")
+    else:
+        logger.info(f"Found {total_user_count} users to load")
+    # ==================================================
+    
+    milestone = max(1, users_to_load // 10)
 
-                elif file.endswith("_venue.parquet"):
-                    idx = file.split("_")[1]
-                    users_in_run.setdefault(idx, {})["venue_history"] = pd.read_parquet(full)
+    # Load data from matching runs
+    users_loaded = 0
+    skip_count = 0
+    
+    # If loading last user_number, calculate how many to skip
+    if user_number is not None and load_last:
+        skip_count = total_user_count - user_number
+    
+    for folder_path, run_path, user_indices in matching_runs:
+        for idx in user_indices:
+            # Skip users if we're loading last N
+            if skip_count > 0:
+                skip_count -= 1
+                continue
+            
+            # Stop if we've loaded enough users (for first N)
+            if user_number is not None and not load_last and users_loaded >= user_number:
+                break
+            
+            # Load this user's data
+            user_data = {}
+            
+            history_file = os.path.join(run_path, f"user_{idx}_history.parquet")
+            if os.path.exists(history_file):
+                user_data["user_history"] = pd.read_parquet(history_file)
+            
+            venue_file = os.path.join(run_path, f"user_{idx}_venue.parquet")
+            if os.path.exists(venue_file):
+                user_data["venue_history"] = pd.read_parquet(venue_file)
+            
+            stats_file = os.path.join(run_path, f"user_{idx}_stats.parquet")
+            if os.path.exists(stats_file):
+                user_data["stats"] = pd.read_parquet(stats_file)
+            
+            # Append if both history and venue exist
+            uh = user_data.get("user_history")
+            vh = user_data.get("venue_history")
+            st = user_data.get("stats", None)
+            
+            if uh is not None and vh is not None:
+                loaded_users.append((uh, vh, st))
+                users_loaded += 1
+                
+                # ========== PROGRESS TRACKING ==========
+                if users_loaded % milestone == 0 or users_loaded == users_to_load:
+                    percentage = (users_loaded / users_to_load) * 100
+                    logger.info(f"Loading progress: {percentage:.0f}% ({users_loaded}/{users_to_load} users)")
+                # ========================================
+                
+                # Stop if we've loaded enough
+                if user_number is not None and users_loaded >= user_number:
+                    break
+        
+        # Break outer loop if done
+        if user_number is not None and users_loaded >= user_number:
+            break
 
-                elif file.endswith("_stats.parquet"):
-                    idx = file.split("_")[1]
-                    users_in_run.setdefault(idx, {})["stats"] = pd.read_parquet(full)
-
-            # Append valid users
-            for d in users_in_run.values():
-                uh = d.get("user_history")
-                vh = d.get("venue_history")
-                st = d.get("stats", None)
-                if uh is not None and vh is not None:
-                    loaded_users.append((uh, vh, st))
+    logger.info(f"Data loaded: {len(loaded_users)} users")
 
     return loaded_users
 
@@ -559,7 +649,7 @@ def get_trajectory_arrays(user, k_top=None):
 
     return np.array(x_traj), np.array(y_traj)
 
-def plot_S_over_time(user_history_list, title = None, bins_per_decade=4, k = None):
+def plot_S_over_time(user_history_list, title = None, bins_per_decade=4):
     """
     Plot the exploration statistic S(t) over time on a log-log scale.
 
@@ -574,25 +664,19 @@ def plot_S_over_time(user_history_list, title = None, bins_per_decade=4, k = Non
         Title for the plot. If None, no title is set.
     bins_per_decade : int, optional (default=4)
         Number of bins per decade for logarithmic binning.
-    k : int, optional (default=None)
-        Number of user histories to include. If None, include all.
 
     Returns
     -------
     None
         The function generates and saves a plot but does not return any value.
     """
-    if k is not None:
-        dfs_to_plot = user_history_list[:k]
-    else:
-        dfs_to_plot = user_history_list
-
+    logger.info("Plotting S over time")
     plt.figure(figsize=(8,5))
     
     clocks = np.array([])
     s_values = np.array([])
 
-    for df in dfs_to_plot:
+    for df in user_history_list:
         e_rows = df[df['State(E/R)'] == 'E'].copy()
         
         clocks_temp = e_rows['Clock']
@@ -693,7 +777,7 @@ def dotted_histogram(numpy_array, bins_per_decade=4):
     return centers_filtered, density_filtered
 
 
-def plot_r_gyr_over_time(user_history_list, title=None, bins_per_decade=4, k=None):
+def plot_r_gyr_over_time(user_history_list, title=None, bins_per_decade=4):
     """
     Plot the cumulative radius of gyration r_gyr(t) over time on a log scale.
 
@@ -709,24 +793,17 @@ def plot_r_gyr_over_time(user_history_list, title=None, bins_per_decade=4, k=Non
         Title for the plot. If None, no title is set.
     bins_per_decade : int, optional (default=4)
         Number of bins per decade for logarithmic binning.
-    k : int, optional (default=None)
-        Number of user histories to include. If None, include all.
 
     Returns
     -------
     None
         The function generates and saves a plot but does not return any value.
     """
-    
-    if k is not None:
-        dfs_to_plot = user_history_list[-k:]
-    else:
-        dfs_to_plot = user_history_list
-
+    logger.info("Plotting r_gyr over time")
     clocks = np.array([])
     r_gyr_values = np.array([])
 
-    for df in dfs_to_plot:
+    for df in user_history_list:
         clocks_temp = df['Clock'].values  
         r_gyr_temp = []
         for i in range(len(df)):
