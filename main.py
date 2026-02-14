@@ -29,8 +29,8 @@ def main():
         "gamma": 0.2,
         "a_param": 0.75,
         "b_param": 0.6,
-        "user_number": 50000, #error on usernumber less than 10 to be solved
-        "time": 100000
+        "user_number": 1,
+        "time": 10000
     }
 
     # Filters for loading saved datasets
@@ -41,14 +41,14 @@ def main():
         "gamma": 0.2,
         "a_param": 0.75,
         "b_param": 0.6,
-        #"user_number": -5, #if positive loads first users, if negative loads last users
-        "time": 100000
+        #"user_number": 1, #if positive loads first users, if negative loads last users
+        "time": 10000
     }
 
     plot_list = [
-         #"mobility",
-         "rg_distribution",
-         #"freq_distribution",
+         "mobility",
+         #"rg_distribution",
+         "freq_distribution",
          #"two_radius"
          #"s_over_time"
          #"rg_ over_time"

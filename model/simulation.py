@@ -38,7 +38,7 @@ class Simulation:
 
     def run(self):
 
-        milestone = self.user_number // 10  # 10% increments
+        milestone = max(1, self.user_number // 10)  # 10% increments with a minimum of 1 user to avoid division by zero
         logger.info(f"Starting simulation for {self.user_number} users...")
 
         for i in range(self.user_number):
@@ -114,7 +114,7 @@ class Simulation:
 
         # ========== PROGRESS TRACKING ==========
         total_users = len(self.users_list)
-        milestone = total_users // 10  # 10% increments
+        milestone = max(1, total_users // 10)  # 10% increments with a minimum of 1 user to avoid division by zero
         # ========================================
 
         for i, user in enumerate(self.users_list):
@@ -145,15 +145,15 @@ class Simulation:
             model.utils.plot_mobility_visualization(
             self.last_user_history,
             self.last_venue_history,
-            self.last_stats,
-            rg=True,
+            stats = self.last_stats,
+            filters=self.filters,
             title=model.utils.build_plot_title("User Mobility", self.filters)
             )
 
         if "rg_distribution" in self.plots_to_generate:
             model.utils.plot_rg_distribution(
             self.rg_list,
-            #num_bins=20,
+            filters=self.filters,
             title=model.utils.build_plot_title("RG Distribution", self.filters)
             )
 
@@ -161,6 +161,7 @@ class Simulation:
             model.utils.plot_frequency_distribution(
             self.last_venue_history,
             self.gamma,
+            filters=self.filters,
             title=model.utils.build_plot_title("Frequency Distribution", self.filters)
             )
 
@@ -169,19 +170,22 @@ class Simulation:
             model.utils.plot_two_radius_vs_radius(
             self.rg_list,
             self.two_rg_list,
+            filters=self.filters,
             title=model.utils.build_plot_title("Two-RG vs RG", self.filters)
             )
 
         if "s_over_time" in self.plots_to_generate:
             model.utils.plot_S_over_time(
             self.user_history_list,
+            filters=self.filters,
             bins_per_decade=10,
             title=model.utils.build_plot_title("S over time", self.filters)
             )
 
-        if "rg_ over_time" in self.plots_to_generate:
+        if "rg_over_time" in self.plots_to_generate:
             model.utils.plot_r_gyr_over_time(
                 self.user_history_list,
+                filters=self.filters,
                 bins_per_decade=10,
                 title=model.utils.build_plot_title("Radius of Gyration over time", self.filters)
                 )
