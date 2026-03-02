@@ -859,3 +859,352 @@ def plot_r_gyr_over_time(user_history_list, filters=None, title=None, bins_per_d
     plt.tight_layout()
     filepath_save_plot("plots" , filters=filters)
 
+
+
+# =============================================================================
+# THREE-PHASE PIPELINE: LOADERS AND PLOT FUNCTIONS
+# =============================================================================
+
+def load_parquet_folder(base_folder, filters, file_map):
+    """
+    Generic loader for per-user Parquet datasets stored under a parameter folder.
+
+    This function is the single shared loading implementation used by both
+    load_raw_parquet() and load_analysis_parquet().  It scans base_folder for
+    parameter sub-folders that match the supplied filters, then loads the files
+    described by file_map for each user found.
+
+    Folder layout expected
+    ----------------------
+    base_folder/
+        ro_{ro}_gamma_{gamma}_a_{a}_b_{b}_time_{time}/
+            {run_id}/
+                user_0_{suffix_1}.parquet
+                user_0_{suffix_2}.parquet
+                ...
+
+    Parameters
+    ----------
+    base_folder : str
+        Root directory to scan (e.g. the full path to raw_data/ or analysis_data/).
+    filters : dict
+        Parameter filters with None values and "user_number" already removed.
+        Keys should match simulation parameter names
+        ("ro", "gamma", "a_param", "b_param", "time").
+    file_map : dict
+        Maps a result-dict key to the per-user filename suffix.
+        Example: {"user_history": "_history.parquet", "venue_history": "_venue.parquet"}
+        The first key in file_map is used to discover which user indices exist in a run
+        folder (i.e. it must be present for every user).
+
+    Returns
+    -------
+    list of dict
+        One dict per loaded user.  Keys match file_map; values are DataFrames
+        (or None when a file is absent).  User indices within a run that are
+        missing the primary file are skipped.
+
+    Notes
+    -----
+    The "user_number" logic (first/last N) is handled by the callers
+    load_raw_parquet() and load_analysis_parquet() before calling this function,
+    so this function always loads all users that survive the filter.
+    """
+    # Map from simulation-parameter names to the token names used in folder names
+    key_map = {
+        "ro":      "ro",
+        "gamma":   "gamma",
+        "a_param": "a",
+        "b_param": "b",
+        "time":    "time",
+    }
+
+    # Primary suffix is the first entry — used to discover user indices
+    primary_suffix = next(iter(file_map.values()))
+
+    matching_runs = []   # list of (run_path, sorted_user_indices)
+
+    for folder_name in os.listdir(base_folder):
+        folder_path = os.path.join(base_folder, folder_name)
+        if not os.path.isdir(folder_path):
+            continue
+
+        # Parse "token_value_token_value_..." folder names
+        parts = folder_name.split("_")
+        if len(parts) % 2 != 0:
+            continue
+        try:
+            raw_params = {parts[i]: parts[i + 1] for i in range(0, len(parts), 2)}
+        except Exception:
+            continue
+
+        # Convert to Python types (time → int, everything else → float)
+        converted = {}
+        for k, v in raw_params.items():
+            if k == "time":
+                try:
+                    converted[k] = int(v)
+                except ValueError:
+                    converted[k] = v
+            else:
+                try:
+                    converted[k] = float(v)
+                except ValueError:
+                    converted[k] = v
+
+        # Check all filter conditions
+        if any(converted.get(key_map.get(fk, fk)) != fv
+               for fk, fv in filters.items()):
+            continue
+
+        # Collect all run sub-folders
+        for run_folder in os.listdir(folder_path):
+            run_path = os.path.join(folder_path, run_folder)
+            if not os.path.isdir(run_path):
+                continue
+
+            # Discover user indices from primary-suffix files
+            user_indices = []
+            for fname in os.listdir(run_path):
+                if fname.endswith(primary_suffix):
+                    token = fname[len("user_") : -len(primary_suffix)]
+                    try:
+                        user_indices.append((int(token), token))
+                    except ValueError:
+                        user_indices.append((0, token))
+
+            if user_indices:
+                user_indices.sort(key=lambda x: x[0])
+                matching_runs.append((run_path, [s for _, s in user_indices]))
+
+    # Load every matched user
+    loaded = []
+    for run_path, user_indices in matching_runs:
+        for idx in user_indices:
+            entry = {}
+            for key, suffix in file_map.items():
+                fpath = os.path.join(run_path, f"user_{idx}{suffix}")
+                entry[key] = pd.read_parquet(fpath) if os.path.exists(fpath) else None
+            # Only include users where the primary file was present
+            if entry[next(iter(file_map))] is not None:
+                loaded.append(entry)
+
+    return loaded
+
+
+def load_raw_parquet(filters=None, base_folder=None):
+    """
+    Load raw simulation data (user_history, venue_history) from raw_data/.
+
+    Parameters
+    ----------
+    filters : dict, optional
+        Parameter filters. Accepted keys: "ro", "gamma", "a_param", "b_param",
+        "time", "user_number".
+        "user_number": positive = first N users, negative = last N, absent = all.
+    base_folder : str, optional
+        Override for the raw_data root directory.
+
+    Returns
+    -------
+    list of dict
+        One dict per user with keys "user_history" and "venue_history".
+    """
+    logger.info("Loading raw simulation data (raw_data)...")
+
+    if filters is None:
+        filters = {}
+
+    user_number = filters.get("user_number", None)
+    filters_clean = {k: v for k, v in filters.items()
+                     if v is not None and k != "user_number"}
+
+    if base_folder is None:
+        project_root = os.path.dirname(os.path.dirname(
+            os.path.abspath(inspect.getfile(inspect.currentframe()))
+        ))
+        base_folder = os.path.join(project_root, "raw_data")
+
+    if not os.path.exists(base_folder):
+        logger.warning(f"raw_data folder not found: {base_folder}")
+        return []
+
+    file_map = {
+        "user_history":  "_history.parquet",
+        "venue_history": "_venue.parquet",
+    }
+
+    loaded = load_parquet_folder(base_folder, filters_clean, file_map)
+    loaded = _apply_user_number_slice(loaded, user_number)
+
+    logger.info(f"Loaded {len(loaded)} users from raw_data")
+    return loaded
+
+
+def load_analysis_parquet(filters=None, base_folder=None):
+    """
+    Load analysis data from analysis_data/.
+
+    Parameters
+    ----------
+    filters : dict, optional
+        Parameter filters. Accepted keys: "ro", "gamma", "a_param", "b_param",
+        "time", "user_number".
+    base_folder : str, optional
+        Override for the analysis_data root directory.
+
+    Returns
+    -------
+    list of dict
+        One dict per user with keys: "user_history", "venue_history",
+        "stats", "rg_over_time", "s_over_time".
+        Any value may be None if the corresponding file is absent.
+    """
+    logger.info("Loading analysis data (analysis_data)...")
+
+    if filters is None:
+        filters = {}
+
+    user_number = filters.get("user_number", None)
+    filters_clean = {k: v for k, v in filters.items()
+                     if v is not None and k != "user_number"}
+
+    if base_folder is None:
+        project_root = os.path.dirname(os.path.dirname(
+            os.path.abspath(inspect.getfile(inspect.currentframe()))
+        ))
+        base_folder = os.path.join(project_root, "analysis_data")
+
+    if not os.path.exists(base_folder):
+        logger.warning(f"analysis_data folder not found: {base_folder}")
+        return []
+
+    file_map = {
+        "stats":         "_stats.parquet",
+        "rg_over_time":  "_rg_over_time.parquet",
+        "s_over_time":   "_s_over_time.parquet",
+        "venue_history": "_venue.parquet",
+        "user_history":  "_history.parquet",
+    }
+
+    loaded = load_parquet_folder(base_folder, filters_clean, file_map)
+    loaded = _apply_user_number_slice(loaded, user_number)
+
+    logger.info(f"Analysis data loaded: {len(loaded)} users")
+    return loaded
+
+
+def _apply_user_number_slice(loaded, user_number):
+    """
+    Slice a list of loaded user entries according to the user_number filter.
+
+    Positive user_number → keep first N.
+    Negative user_number → keep last N.
+    None                 → keep all.
+    """
+    if user_number is None:
+        return loaded
+    if user_number >= 0:
+        return loaded[:user_number]
+    return loaded[user_number:]   # negative index slices from the end
+
+
+# ---------------------------------------------------------------------------
+# New plot functions that consume pre-computed DataFrames from analysis_data
+# ---------------------------------------------------------------------------
+
+def plot_S_over_time_from_df(s_over_time_list, filters=None, title=None, bins_per_decade=4):
+    """
+    Plot S(t) — cumulative distinct venues visited — over time using
+    pre-computed s_over_time DataFrames from analysis_data/.
+
+    Parameters
+    ----------
+    s_over_time_list : list of pd.DataFrame
+        Each DataFrame has columns ['clock', 's'].
+    filters : dict, optional
+        Used for the plot file name.
+    title : str, optional
+        Plot title.
+    bins_per_decade : int, optional
+        Log-axis binning density.
+    """
+    logger.info("Plotting S over time (from analysis data)")
+
+    if not s_over_time_list:
+        logger.warning("No S-over-time data available to plot")
+        return
+
+    clocks   = np.concatenate([df["clock"].values for df in s_over_time_list])
+    s_values = np.concatenate([df["s"].values     for df in s_over_time_list])
+
+    min_c, max_c = clocks.min(), clocks.max()
+    log_min  = np.log10(min_c) - 0.05
+    log_max  = np.log10(max_c) + 0.05
+    num_bins = int(np.ceil((log_max - log_min) * bins_per_decade))
+    bin_edges = np.logspace(log_min, log_max, num_bins)
+
+    import scipy.stats
+    y_mean, edges, _ = scipy.stats.binned_statistic(
+        clocks, s_values, statistic='mean', bins=bin_edges)
+    centers = np.sqrt(edges[:-1] * edges[1:])
+
+    plt.figure(figsize=(8, 5))
+    plt.scatter(centers, y_mean, marker='o')
+    plt.xscale("log")
+    plt.yscale("log")
+    plt.xlabel("Clock")
+    plt.ylabel("S(t)")
+    plt.grid(True, which="both", ls="--", alpha=0.5)
+    if title:
+        plt.title(title, fontsize=10)
+
+    filepath_save_plot(folder="plots", filters=filters)
+
+
+def plot_r_gyr_over_time_from_df(rg_over_time_list, filters=None, title=None, bins_per_decade=4):
+    """
+    Plot r_gyr(t) — radius of gyration as a function of time — using
+    pre-computed rg_over_time DataFrames from analysis_data/.
+
+    Parameters
+    ----------
+    rg_over_time_list : list of pd.DataFrame
+        Each DataFrame has columns ['clock', 'rg'].
+    filters : dict, optional
+        Used for the plot file name.
+    title : str, optional
+        Plot title.
+    bins_per_decade : int, optional
+        Log-axis binning density.
+    """
+    logger.info("Plotting r_gyr over time (from analysis data)")
+
+    if not rg_over_time_list:
+        logger.warning("No rg-over-time data available to plot")
+        return
+
+    clocks    = np.concatenate([df["clock"].values for df in rg_over_time_list])
+    rg_values = np.concatenate([df["rg"].values    for df in rg_over_time_list])
+
+    min_c, max_c = clocks.min(), clocks.max()
+    log_min  = np.log10(min_c) - 0.05
+    log_max  = np.log10(max_c) + 0.05
+    num_bins = int(np.ceil((log_max - log_min) * bins_per_decade))
+    bin_edges = np.logspace(log_min, log_max, num_bins)
+
+    import scipy.stats
+    rg_mean, edges, _ = scipy.stats.binned_statistic(
+        clocks, rg_values, statistic='mean', bins=bin_edges)
+    centers = np.sqrt(edges[:-1] * edges[1:])
+
+    plt.figure(figsize=(8, 5))
+    plt.scatter(centers, rg_mean, marker='o')
+    plt.xscale("log")
+    plt.xlabel("Clock")
+    plt.ylabel("r_gyr(t)")
+    plt.grid(True, which="both", ls="--", alpha=0.5)
+    if title:
+        plt.title(title, fontsize=10)
+
+    filepath_save_plot(folder="plots", filters=filters)
