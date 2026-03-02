@@ -38,6 +38,9 @@ class Simulation:
 
     def run(self):
 
+        milestone = max(1, self.user_number // 10)  # 10% increments with a minimum of 1 user to avoid division by zero
+        logger.info(f"Starting simulation for {self.user_number} users...")
+
         for i in range(self.user_number):
             self.user = model.user.User(uid = f"User_{i}", a_param=self.a_param, b_param=self.b_param, simulation = self)
             while self.user.clock < self.time:
@@ -48,10 +51,20 @@ class Simulation:
             self.rg_list.append(self.user.r_gyr)
             self.two_rg_list.append(self.user.r_gyr_two)
 
+            if (i + 1) % milestone == 0 or (i + 1) == self.user_number:
+                percentage = ((i + 1) / self.user_number) * 100
+                logger.info(f"Simulation progress: {percentage:.0f}% ({i + 1}/{self.user_number} users simulated)")
+
     def load_data(self):
         logger.info("Loading saved simulation data...")
         loaded_users = model.utils.load_simulations_parquet(filters=self.filters)
         #print((loaded_users))
+
+        actual_users_loaded = len(loaded_users)
+        if self.filters is None:
+            self.filters = {}
+        self.filters['user_number'] = actual_users_loaded #Replace the user_number filter with the actual number of users loaded, for accurate plot titles
+        logger.info(f"Updated filters: user_number set to {actual_users_loaded}")
 
         for entry in loaded_users:
             # entry is the tuple (df1, df2, stats)
@@ -86,21 +99,23 @@ class Simulation:
 
         logger.info("Saving simulation results...")
 
-    # Default folder: sata/ at project root
         if base_folder is None:
             project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             base_folder = os.path.join(project_root, "data")
         os.makedirs(base_folder, exist_ok=True)
 
-        # Folder name based on simulation parameters (excluding user_number)
         folder_name = f"ro_{self.ro}_gamma_{self.gamma}_a_{self.a_param}_b_{self.b_param}_time_{self.time}"
         folder_path = os.path.join(base_folder, folder_name)
         os.makedirs(folder_path, exist_ok=True)
 
-        # Unique subfolder for this execution to prevent overwriting
         run_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         run_folder_path = os.path.join(folder_path, run_id)
         os.makedirs(run_folder_path, exist_ok=True)
+
+        # ========== PROGRESS TRACKING ==========
+        total_users = len(self.users_list)
+        milestone = max(1, total_users // 10)  # 10% increments with a minimum of 1 user to avoid division by zero
+        # ========================================
 
         for i, user in enumerate(self.users_list):
             # Save user_history
@@ -113,8 +128,14 @@ class Simulation:
 
             # Save stats if they exist
             if hasattr(user, "stats") and user.stats is not None:
-                stats_df = pd.DataFrame(user.stats[1:], columns=user.stats[0])  # skip header
+                stats_df = pd.DataFrame(user.stats[1:], columns=user.stats[0])
                 stats_df.to_parquet(os.path.join(run_folder_path, f"user_{i}_stats.parquet"), index=False)
+
+            # ========== PROGRESS TRACKING ==========
+            if (i + 1) % milestone == 0 or (i + 1) == total_users:
+                percentage = ((i + 1) / total_users) * 100
+                logger.info(f"Progress: {percentage:.0f}% ({i + 1}/{total_users} users saved)")
+            # ========================================
 
         logger.info("Simulation results saved...")
 
@@ -124,23 +145,24 @@ class Simulation:
             model.utils.plot_mobility_visualization(
             self.last_user_history,
             self.last_venue_history,
-            self.last_stats,
-            rg=True,
-            title=model.utils.build_plot_title("User Mobility", self.sim_params)
+            stats = self.last_stats,
+            filters=self.filters,
+            title=model.utils.build_plot_title("User Mobility", self.filters)
             )
 
         if "rg_distribution" in self.plots_to_generate:
             model.utils.plot_rg_distribution(
             self.rg_list,
-            #num_bins=20,
-            title=model.utils.build_plot_title("RG Distribution", self.sim_params)
+            filters=self.filters,
+            title=model.utils.build_plot_title("RG Distribution", self.filters)
             )
 
         if "freq_distribution" in self.plots_to_generate:
             model.utils.plot_frequency_distribution(
             self.last_venue_history,
             self.gamma,
-            title=model.utils.build_plot_title("Frequency Distribution", self.sim_params)
+            filters=self.filters,
+            title=model.utils.build_plot_title("Frequency Distribution", self.filters)
             )
 
 
@@ -148,23 +170,25 @@ class Simulation:
             model.utils.plot_two_radius_vs_radius(
             self.rg_list,
             self.two_rg_list,
-            title=model.utils.build_plot_title("Two-RG vs RG", self.sim_params)
+            filters=self.filters,
+            title=model.utils.build_plot_title("Two-RG vs RG", self.filters)
             )
 
         if "s_over_time" in self.plots_to_generate:
             model.utils.plot_S_over_time(
             self.user_history_list,
+            filters=self.filters,
             bins_per_decade=10,
-            title=model.utils.build_plot_title("S over time", self.sim_params),
-            k = 100
+            title=model.utils.build_plot_title("S over time", self.filters)
             )
 
-        if "rg_ over_time" in self.plots_to_generate:
+        if "rg_over_time" in self.plots_to_generate:
             model.utils.plot_r_gyr_over_time(
                 self.user_history_list,
-                title=None,
+                filters=self.filters,
                 bins_per_decade=10,
-                k=100)
+                title=model.utils.build_plot_title("Radius of Gyration over time", self.filters)
+                )
         
             
  

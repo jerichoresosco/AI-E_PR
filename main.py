@@ -9,7 +9,8 @@ logger = logging.getLogger(__name__)
 #bringing level attention for logger to Info
 logging.basicConfig(
     level=logging.INFO,
-    format="%(levelname)s:%(name)s:%(message)s"
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
 )
 
 def main():
@@ -26,10 +27,10 @@ def main():
     simulation_params = {
         "ro": 0.1,
         "gamma": 0.2,
-        "a_param": 0.5,
-        "b_param": 0.7,
-        "user_number": 99,
-        "time": 1000000
+        "a_param": 0.75,
+        "b_param": 0.6,
+        "user_number": 1,
+        "time": 10000
     }
 
     # Filters for loading saved datasets
@@ -38,18 +39,19 @@ def main():
     filters = {
         "ro": 0.1,
         "gamma": 0.2,
-        "a_param": 0.5,
-        "b_param": 0.7,
-        "time": 1000000
+        "a_param": 0.75,
+        "b_param": 0.6,
+        #"user_number": 1, #if positive loads first users, if negative loads last users
+        "time": 10000
     }
 
     plot_list = [
-         #"mobility",
+         "mobility",
          #"rg_distribution",
-         #"freq_distribution",
+         "freq_distribution",
          #"two_radius"
          #"s_over_time"
-         "rg_ over_time"
+         #"rg_ over_time"
     ]
 
     start_time = time.time()
@@ -67,7 +69,6 @@ def main():
         )
         simulation.run()
         simulation.save_users_parquet()
-
 
     # ==========================================================
     # MODE 2: LOAD
