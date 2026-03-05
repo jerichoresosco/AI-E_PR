@@ -15,33 +15,54 @@ logging.basicConfig(
 def main():
 
     # ==========================================================
-    # 1) Choose mode
+    # Choose mode
     # ==========================================================
 
-    mode = "analyse"   # Options:
-                                    #   "simulate"             – run simulation, save raw_data only
-                                    #   "analyse"              – load raw_data, compute & save analysis_data
-                                    #   "simulate_and_analyse" – simulate then analyse without reloading from disk
-                                    #   "plot"                 – load analysis_data and plot
+    mode = "plot"    # Options:
+                        #   "simulate"             - run simulation, save raw_data only
+                        #   "analyse"              - load raw_data, compute & save analysis_data
+                        #   "simulate_and_analyse" - simulate then analyse without reloading from disk
+                        #   "plot"                 - load analysis_data and plot
 
-    # Parameters for simulation / folder matching
-    simulation_params = {
+    # ----------------------------------------------------------
+    # simulate_params -- used only in "simulate" and
+    # "simulate_and_analyse" modes.
+    # ----------------------------------------------------------
+    simulate_params = {
         "ro": 0.1,
         "gamma": 0.2,
         "a_param": 0.75,
         "b_param": 0.6,
         "user_number": 100,
-        "time": 1000
+        "time": 1000,
     }
 
-    # Filters for loading saved datasets (None = ignore that filter)
-    filters = {
+    # ----------------------------------------------------------
+    # analyse_params -- used only in "analyse" mode.
+    # Identifies which raw_data folders to process.
+    # user_number is absent: analysis processes complete run
+    # folders, never a subset of users.
+    # ----------------------------------------------------------
+    analyse_params = {
         "ro": 0.1,
         "gamma": 0.2,
         "a_param": 0.75,
         "b_param": 0.6,
-        "user_number": 10,   # positive → first N, negative → last N, absent → all
-        "time": 1000
+        "time": 1000,
+    }
+
+    # ----------------------------------------------------------
+    # plot_params -- used only in "plot" mode.
+    # Identifies which analysis_data to load.
+    # user_number: positive = first N, negative = last N, absent = all
+    # ----------------------------------------------------------
+    plot_params = {
+        "ro": 0.1,
+        "gamma": 0.2,
+        "a_param": 0.75,
+        "b_param": 0.6,
+        "time": 1000,
+        "user_number": 10,
     }
 
     plot_list = [
@@ -58,68 +79,39 @@ def main():
 
     # ==========================================================
     # MODE 1: SIMULATE only
-    #   Runs the simulation and saves user_history + venue_history
-    #   to raw_data/. No statistics are computed.
     # ==========================================================
     if mode == "simulate":
 
-        simulation = model.simulation.Simulation(
-            **simulation_params,
-            #plots_to_generate=plot_list,
-            #sim_params=simulation_params
-        )
-        simulation.run()
+        simulation = model.simulation.Simulation()
+        simulation.run(simulate_params)
         simulation.save_raw_data()
 
     # ==========================================================
     # MODE 2: ANALYSE only
-    #   Loads raw_data via filters, computes analysis quantities
-    #   (stats, rg_over_time, s_over_time, venue copy) and saves
-    #   them to analysis_data/.
     # ==========================================================
     elif mode == "analyse":
 
-        simulation = model.simulation.Simulation(
-            **simulation_params,
-            #plots_to_generate=plot_list,
-            #sim_params=simulation_params,
-            filters=filters
-        )
-        # raw_run_folder=None → loads from disk using filters
-        simulation.run_analysis(raw_run_folder=None)
+        simulation = model.simulation.Simulation()
+        simulation.run_analysis(analyse_params)
 
     # ==========================================================
     # MODE 3: SIMULATE + ANALYSE (no double disk load)
-    #   Runs simulation, saves raw_data, then immediately runs
-    #   analysis on the in-memory users_list (no reload needed).
     # ==========================================================
     elif mode == "simulate_and_analyse":
 
-        simulation = model.simulation.Simulation(
-            **simulation_params,
-            #plots_to_generate=plot_list,
-            #sim_params=simulation_params
-        )
-        simulation.run()
+        simulation = model.simulation.Simulation()
+        simulation.run(simulate_params)
         raw_run_folder = simulation.save_raw_data()
-
-        # Pass raw_run_folder so analysis skips the disk reload
-        simulation.run_analysis(raw_run_folder=raw_run_folder)
+        simulation.run_analysis(simulate_params, raw_run_folder=raw_run_folder)
 
     # ==========================================================
     # MODE 4: PLOT only
-    #   Loads pre-computed analysis_data via filters and plots.
     # ==========================================================
     elif mode == "plot":
 
-        simulation = model.simulation.Simulation(
-            **simulation_params,
-            plots_to_generate=plot_list,
-            sim_params=simulation_params,
-            filters=filters
-        )
-        simulation.load_analysis_data()
-        simulation.plot()
+        simulation = model.simulation.Simulation()
+        simulation.load_analysis_data(plot_params)
+        simulation.plot(plot_list)
 
     else:
         raise ValueError(
