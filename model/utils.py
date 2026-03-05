@@ -3,7 +3,6 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import os
 import inspect
-import model.user
 import scipy.stats
 
 import logging
@@ -141,6 +140,570 @@ def filepath_save_plot(folder = "test_plots", name: str = None, filters: dict = 
     plt.tight_layout()
     plt.savefig(filepath)
     plt.close()
+
+def build_plot_title(base_title, filters):
+    """
+    Build a plot title by combining a base title with simulation parameters.
+
+    This function constructs a descriptive title for plots by appending loading
+    parameters in a formatted string.
+
+    Parameters
+    ----------
+    base_title : str
+        The base title for the plot.
+    filters : dict
+        Dictionary of filters to include in the title.
+
+    Returns
+    -------
+    str
+        The constructed title string.
+    """
+    if not filters:
+        return base_title
+
+    param_str = ", ".join(f"{k}={v}" for k, v in filters.items())
+    return f"{base_title} ({param_str})"
+        
+
+def polar_to_cartesian (delta_r, angle):
+    """
+    Convert polar coordinates to Cartesian coordinates.
+
+    This function transforms a distance and angle in polar coordinates
+    to x and y coordinates in Cartesian space.
+
+    Parameters
+    ----------
+    delta_r : float
+        The radial distance from the origin.
+    angle : float
+        The angle in radians from the positive x-axis.
+
+    Returns
+    -------
+    tuple of float
+        A tuple (x, y) representing the Cartesian coordinates.
+    """
+    x = delta_r*np.cos(angle)
+    y = delta_r*np.sin(angle)
+    return (x,y)
+
+def get_trajectory_arrays(user, k_top=None):
+    """
+    Extract trajectory coordinates from user history as NumPy arrays.
+
+    This function processes the user's history data to extract x and y coordinates
+    of the trajectory, optionally filtering to include only the top-k most visited venues.
+
+    Parameters
+    ----------
+    user : User
+        An object with user_history and venue_history as lists of lists.
+    k_top : int, optional (default=None)
+        Number of top visited venues to include. If None, include all venues.
+
+    Returns
+    -------
+    x_traj : np.ndarray
+        X coordinates of the trajectory, starting with 0.
+    y_traj : np.ndarray
+        Y coordinates of the trajectory, starting with 0.
+    """
+    header = user.user_history[0]
+    data = user.user_history[1:]
+    idx_dest_x = header.index("Destination_x_coord")
+    idx_dest_y = header.index("Destination_y_coord")
+    idx_dest_name = header.index("Destination")
+
+    dest_x = np.array([row[idx_dest_x] for row in data], dtype=float)
+    dest_y = np.array([row[idx_dest_y] for row in data], dtype=float)
+    trajectory = [row[idx_dest_name] for row in data]
+
+    if k_top is not None:
+        venue_header = user.venue_history[0]
+        venue_data = user.venue_history[1:]
+        idx_venue_name = venue_header.index("Venue_name")
+        idx_visits = venue_header.index("Number of visits")
+
+        venue_visits = {row[idx_venue_name]: row[idx_visits] for row in venue_data}
+        top_k_venues = sorted(venue_visits, key=venue_visits.get, reverse=True)[:k_top]
+    else:
+        top_k_venues = None 
+
+    x_traj = [0]  
+    y_traj = [0]
+
+    for i, venue in enumerate(trajectory):
+        if (top_k_venues is None) or (venue in top_k_venues):
+            x_traj.append(dest_x[i])
+            y_traj.append(dest_y[i])
+
+    return np.array(x_traj), np.array(y_traj)
+
+
+def dotted_histogram(numpy_array, bins_per_decade=4):
+    """
+    Compute a logarithmic histogram with density normalization.
+
+    This function creates logarithmically spaced bins for the input array,
+    computes frequencies, and normalizes to density. It filters out zero values
+    and returns only bins with positive density.
+
+    Parameters
+    ----------
+    numpy_array : array-like
+        Input array of values to histogram (must be positive).
+    bins_per_decade : int, optional (default=4)
+        Number of bins per decade for logarithmic spacing.
+
+    Returns
+    -------
+    centers_filtered : np.ndarray
+        Geometric centers of the bins with positive density.
+    density_filtered : np.ndarray
+        Normalized density values for the bins.
+    """
+    array = numpy_array[numpy_array > 0]   # avoiding zeros
+
+    min_array = array.min()
+    max_array = array.max()
+
+    log_min = np.log10(min_array)
+    log_max = np.log10(max_array)
+
+    #Avoiding boundary problems using a margin
+    margin = 0.05
+    log_min -= margin
+    log_max += margin
+
+    num_decades = log_max - log_min
+    num_bins = int(np.ceil(num_decades * bins_per_decade))
+
+    # Creation of logarithmic bins
+    bins = np.logspace(log_min, log_max, num_bins + 1)
+
+    # frequencies
+    counts, edges = np.histogram(array, bins=bins)
+
+    # bin logarithmic center
+    centers = np.sqrt(edges[:-1] * edges[1:])
+
+    # normailization
+    widths = np.diff(edges)
+    density = counts / widths / len(array)
+
+    mask = density > 0
+    centers_filtered = centers[mask]
+    density_filtered = density[mask]
+
+    return centers_filtered, density_filtered
+
+
+# =============================================================================
+# ANALYSIS COMPUTATION FUNCTIONS
+# =============================================================================
+
+def compute_stats(user_history_df):
+    """
+    Compute trajectory statistics from a user_history DataFrame.
+
+    Computes:
+      - x/y centre of mass (full trajectory)
+      - x/y centre of mass (top-2 most visited venues only)
+      - radius of gyration (full)
+      - radius of gyration (top-2 venues)
+
+    Parameters
+    ----------
+    user_history_df : pd.DataFrame
+        User history with columns 'Destination', 'Destination_x_coord',
+        'Destination_y_coord'.
+
+    Returns
+    -------
+    pd.DataFrame
+        Two-column DataFrame with columns ['metric', 'value'].
+    """
+    x_traj = np.concatenate(([0], user_history_df["Destination_x_coord"].values))
+    y_traj = np.concatenate(([0], user_history_df["Destination_y_coord"].values))
+
+    x_cm = np.mean(x_traj)
+    y_cm = np.mean(y_traj)
+    r_gyr = np.sqrt(np.mean((x_traj - x_cm)**2 + (y_traj - y_cm)**2))
+
+    # Top-2 most visited destinations
+    top2 = user_history_df["Destination"].value_counts().head(2).index.tolist()
+    mask = user_history_df["Destination"].isin(top2)
+    x_two = np.concatenate(([0], user_history_df.loc[mask, "Destination_x_coord"].values))
+    y_two = np.concatenate(([0], user_history_df.loc[mask, "Destination_y_coord"].values))
+
+    if len(x_two) > 1:
+        x_cm_two = np.mean(x_two)
+        y_cm_two = np.mean(y_two)
+        r_gyr_two = np.sqrt(np.mean((x_two - x_cm_two)**2 + (y_two - y_cm_two)**2))
+    else:
+        x_cm_two, y_cm_two, r_gyr_two = x_cm, y_cm, 0.0
+
+    return pd.DataFrame([
+        {"metric": "x_center of mass",      "value": x_cm},
+        {"metric": "y_center of mass",       "value": y_cm},
+        {"metric": "x_center of mass two",   "value": x_cm_two},
+        {"metric": "y_center of mass two",   "value": y_cm_two},
+        {"metric": "radius of gyration",     "value": r_gyr},
+        {"metric": "radius of gyration two", "value": r_gyr_two},
+    ])
+
+
+def compute_rg_over_time(user_history_df):
+    """
+    Compute the radius of gyration at every time step
+
+    The incremental update uses the identity:
+        Var(x_{1..n}) = E[x²] - E[x]²
+    maintained via running sums of x, y, x², y² 
+
+    Parameters
+    ----------
+    user_history_df : pd.DataFrame
+        User history with columns 'Clock', 'Destination_x_coord',
+        'Destination_y_coord'.
+
+    Returns
+    -------
+    pd.DataFrame
+        Two-column DataFrame with columns ['clock', 'rg'].
+    """
+    clocks = user_history_df["Clock"].values
+    x_vals = user_history_df["Destination_x_coord"].values
+    y_vals = user_history_df["Destination_y_coord"].values
+
+    n = len(x_vals)
+    rg_values = np.empty(n)
+
+    # Initialise with the fixed starting point (0, 0)
+    sum_x  = 0.0
+    sum_y  = 0.0
+    sum_x2 = 0.0
+    sum_y2 = 0.0
+    count  = 1          # the origin (0,0) is always part of the trajectory
+
+    for i in range(n):
+        sum_x  += x_vals[i]
+        sum_y  += y_vals[i]
+        sum_x2 += x_vals[i] ** 2
+        sum_y2 += y_vals[i] ** 2
+        count  += 1
+
+        mean_x = sum_x / count
+        mean_y = sum_y / count
+
+        # Var = E[x²] - E[x]²  (includes origin via initial sums = 0)
+        var_x = sum_x2 / count - mean_x ** 2
+        var_y = sum_y2 / count - mean_y ** 2
+
+        rg_values[i] = np.sqrt(var_x + var_y)
+
+    return pd.DataFrame({"clock": clocks, "rg": rg_values})
+
+
+def compute_s_over_time(user_history_df):
+    """
+    Compute S(t) — the cumulative number of distinct venues visited — at each
+    exploration event.
+
+    S starts at 2 because the user begins at Venue_1 and the first action is
+    always an exploration to Venue_2.
+
+    Parameters
+    ----------
+    user_history_df : pd.DataFrame
+        User history with columns 'Clock' and 'State(E/R)'.
+
+    Returns
+    -------
+    pd.DataFrame
+        Two-column DataFrame with columns ['clock', 's'].
+    """
+    e_rows = user_history_df[user_history_df["State(E/R)"] == "E"]
+    clocks   = e_rows["Clock"].values
+    s_values = np.arange(2, 2 + len(clocks))
+    return pd.DataFrame({"clock": clocks, "s": s_values})
+
+
+# =============================================================================
+# LOADERS
+# =============================================================================
+
+def load_parquet_folder(base_folder, filters, file_map, return_run_folders=False):
+    """
+    Generic loader for per-user Parquet datasets stored under a parameter folder.
+
+    This function is the single shared loading implementation used by both
+    load_raw_parquet() and load_analysis_parquet().  It scans base_folder for
+    parameter sub-folders that match the supplied filters, then loads the files
+    described by file_map for each user found.
+
+    Folder layout expected
+    ----------------------
+    base_folder/
+        ro_{ro}_gamma_{gamma}_a_{a}_b_{b}_time_{time}/
+            {run_id}/
+                user_0_{suffix_1}.parquet
+                user_0_{suffix_2}.parquet
+                ...
+
+    Parameters
+    ----------
+    base_folder : str
+        Root directory to scan (e.g. the full path to raw_data/ or analysis_data/).
+    filters : dict
+        Parameter filters with None values and "user_number" already removed.
+        Keys should match simulation parameter names
+        ("ro", "gamma", "a_param", "b_param", "time").
+    file_map : dict
+        Maps a result-dict key to the per-user filename suffix.
+        Example: {"user_history": "_history.parquet", "venue_history": "_venue.parquet"}
+        The first key in file_map is used to discover which user indices exist in a run
+        folder (i.e. it must be present for every user).
+    return_run_folders : bool, optional (default=False)
+        When False, returns plain user-data dicts (keys from file_map).
+        When True, wraps each entry as {"data": <user_dict>, "run_folder": <path>}
+        so callers can trace which run folder each user came from.
+
+    Returns
+    -------
+    list of dict
+        When return_run_folders is False: one dict per loaded user with keys
+        matching file_map; values are DataFrames (or None when a file is absent).
+        When return_run_folders is True: one dict per user with keys "data"
+        (the user dict) and "run_folder" (str path to the source run folder).
+
+    Notes
+    -----
+    Run folders that contain a ``_analyzed.lock`` file are silently skipped.
+    The "user_number" logic (first/last N) is handled by the callers
+    load_raw_parquet() and load_analysis_parquet() before calling this function,
+    so this function always loads all users that survive the filter.
+    """
+    # Map from simulation-parameter names to the token names used in folder names
+    key_map = {
+        "ro":      "ro",
+        "gamma":   "gamma",
+        "a_param": "a",
+        "b_param": "b",
+        "time":    "time",
+    }
+
+    # Primary suffix is the first entry — used to discover user indices
+    primary_suffix = next(iter(file_map.values()))
+
+    matching_runs = []   # list of (run_path, sorted_user_indices)
+
+    for folder_name in os.listdir(base_folder):
+        folder_path = os.path.join(base_folder, folder_name)
+        if not os.path.isdir(folder_path):
+            continue
+
+        # Parse "token_value_token_value_..." folder names
+        parts = folder_name.split("_")
+        if len(parts) % 2 != 0:
+            continue
+        try:
+            raw_params = {parts[i]: parts[i + 1] for i in range(0, len(parts), 2)}
+        except Exception:
+            continue
+
+        # Convert to Python types (time → int, everything else → float)
+        converted = {}
+        for k, v in raw_params.items():
+            if k == "time":
+                try:
+                    converted[k] = int(v)
+                except ValueError:
+                    converted[k] = v
+            else:
+                try:
+                    converted[k] = float(v)
+                except ValueError:
+                    converted[k] = v
+
+        # Check all filter conditions
+        if any(converted.get(key_map.get(fk, fk)) != fv
+               for fk, fv in filters.items()):
+            continue
+
+        # Collect all run sub-folders
+        for run_folder in os.listdir(folder_path):
+            run_path = os.path.join(folder_path, run_folder)
+            if not os.path.isdir(run_path):
+                continue
+
+            # Skip run folders that have already been analyzed
+            if os.path.exists(os.path.join(run_path, "_analyzed.lock")):
+                logger.debug(f"Skipping already-analyzed run folder: {run_path}")
+                continue
+
+            # Discover user indices from primary-suffix files
+            user_indices = []
+            for fname in os.listdir(run_path):
+                if fname.endswith(primary_suffix):
+                    token = fname[len("user_") : -len(primary_suffix)]
+                    try:
+                        user_indices.append((int(token), token))
+                    except ValueError:
+                        user_indices.append((0, token))
+
+            if user_indices:
+                user_indices.sort(key=lambda x: x[0])
+                matching_runs.append((run_path, [s for _, s in user_indices]))
+
+    # Load every matched user
+    loaded = []
+    for run_path, user_indices in matching_runs:
+        for idx in user_indices:
+            entry = {}
+            for key, suffix in file_map.items():
+                fpath = os.path.join(run_path, f"user_{idx}{suffix}")
+                entry[key] = pd.read_parquet(fpath) if os.path.exists(fpath) else None
+            # Only include users where the primary file was present
+            if entry[next(iter(file_map))] is not None:
+                if return_run_folders:
+                    loaded.append({"data": entry, "run_folder": run_path})
+                else:
+                    loaded.append(entry)
+
+    return loaded
+
+
+def load_raw_parquet(filters=None, base_folder=None, return_run_folders=False):
+    """
+    Load raw simulation data (user_history, venue_history) from raw_data/.
+
+    Parameters
+    ----------
+    filters : dict, optional
+        Parameter filters. Accepted keys: "ro", "gamma", "a_param", "b_param",
+        "time", "user_number".
+        "user_number": positive = first N users, negative = last N, absent = all.
+    base_folder : str, optional
+        Override for the raw_data root directory.
+    return_run_folders : bool, optional (default=False)
+        When False (default), returns a plain list of dicts with keys
+        "user_history" and "venue_history" — backward-compatible behaviour.
+        When True, returns a list of dicts with keys "data" (the user dict)
+        and "run_folder" (the raw run folder path), so callers can lock
+        folders after analysis.
+
+    Returns
+    -------
+    list of dict
+        See return_run_folders for the two possible shapes.
+    """
+    logger.info("Loading raw simulation data (raw_data)...")
+
+    if filters is None:
+        filters = {}
+
+    user_number = filters.get("user_number", None)
+    filters_clean = {k: v for k, v in filters.items()
+                     if v is not None and k != "user_number"}
+
+    if base_folder is None:
+        project_root = os.path.dirname(os.path.dirname(
+            os.path.abspath(inspect.getfile(inspect.currentframe()))
+        ))
+        base_folder = os.path.join(project_root, "raw_data")
+
+    if not os.path.exists(base_folder):
+        logger.warning(f"raw_data folder not found: {base_folder}")
+        return []
+
+    file_map = {
+        "user_history":  "_history.parquet",
+        "venue_history": "_venue.parquet",
+    }
+
+    loaded = load_parquet_folder(base_folder, filters_clean, file_map,
+                                 return_run_folders=return_run_folders)
+    loaded = _apply_user_number_slice(loaded, user_number)
+
+    logger.info(f"Loaded {len(loaded)} users from raw_data")
+    return loaded
+
+
+def load_analysis_parquet(filters=None, base_folder=None):
+    """
+    Load analysis data from analysis_data/.
+
+    Parameters
+    ----------
+    filters : dict, optional
+        Parameter filters. Accepted keys: "ro", "gamma", "a_param", "b_param",
+        "time", "user_number".
+    base_folder : str, optional
+        Override for the analysis_data root directory.
+
+    Returns
+    -------
+    list of dict
+        One dict per user with keys: "user_history", "venue_history",
+        "stats", "rg_over_time", "s_over_time".
+        Any value may be None if the corresponding file is absent.
+    """
+    logger.info("Loading analysis data (analysis_data)...")
+
+    if filters is None:
+        filters = {}
+
+    user_number = filters.get("user_number", None)
+    filters_clean = {k: v for k, v in filters.items()
+                     if v is not None and k != "user_number"}
+
+    if base_folder is None:
+        project_root = os.path.dirname(os.path.dirname(
+            os.path.abspath(inspect.getfile(inspect.currentframe()))
+        ))
+        base_folder = os.path.join(project_root, "analysis_data")
+
+    if not os.path.exists(base_folder):
+        logger.warning(f"analysis_data folder not found: {base_folder}")
+        return []
+
+    file_map = {
+        "stats":         "_stats.parquet",
+        "rg_over_time":  "_rg_over_time.parquet",
+        "s_over_time":   "_s_over_time.parquet",
+        "venue_history": "_venue.parquet",
+        "user_history":  "_history.parquet",
+    }
+
+    loaded = load_parquet_folder(base_folder, filters_clean, file_map)
+    loaded = _apply_user_number_slice(loaded, user_number)
+
+    logger.info(f"Analysis data loaded: {len(loaded)} users")
+    return loaded
+
+
+def _apply_user_number_slice(loaded, user_number):
+    """
+    Slice a list of loaded user entries according to the user_number filter.
+
+    Positive user_number → keep first N.
+    Negative user_number → keep last N.
+    None                 → keep all.
+    """
+    if user_number is None:
+        return loaded
+    if user_number >= 0:
+        return loaded[:user_number]
+    return loaded[user_number:]   # negative index slices from the end
+
+
+# =============================================================================
+# PLOT FUNCTIONS
+# =============================================================================
 
 def plot_mobility_visualization(user_history, venue_history, stats = None, filters = None, title = None):
     logger.info("Plotting mobility visualization")
@@ -346,318 +909,6 @@ def plot_two_radius_vs_radius(rg_list, two_rg_list, filters = None, title = None
     filepath_save_plot("plots", filters = filters)
 
 
-def build_plot_title(base_title, filters):
-    """
-    Build a plot title by combining a base title with simulation parameters.
-
-    This function constructs a descriptive title for plots by appending loading
-    parameters in a formatted string.
-
-    Parameters
-    ----------
-    base_title : str
-        The base title for the plot.
-    filters : dict
-        Dictionary of filters to include in the title.
-
-    Returns
-    -------
-    str
-        The constructed title string.
-    """
-    if not filters:
-        return base_title
-
-    param_str = ", ".join(f"{k}={v}" for k, v in filters.items())
-    return f"{base_title} ({param_str})"
-        
-
-def polar_to_cartesian (delta_r, angle):
-    """
-    Convert polar coordinates to Cartesian coordinates.
-
-    This function transforms a distance and angle in polar coordinates
-    to x and y coordinates in Cartesian space.
-
-    Parameters
-    ----------
-    delta_r : float
-        The radial distance from the origin.
-    angle : float
-        The angle in radians from the positive x-axis.
-
-    Returns
-    -------
-    tuple of float
-        A tuple (x, y) representing the Cartesian coordinates.
-    """
-    x = delta_r*np.cos(angle)
-    y = delta_r*np.sin(angle)
-    return (x,y)
-
-
-def load_simulations_parquet(filters=None, base_folder=None):
-    """
-    Load simulation data from Parquet files based on parameter filters.
-
-    This function scans a directory structure for simulation data stored in Parquet format,
-    applying filters to select specific simulation runs. It loads user history, venue history,
-    and optional statistics for each matching simulation.
-
-    Parameters
-    ----------
-    filters : dict, optional (default=None)
-        Dictionary of filters to apply, e.g., {"ro": 0.6, "b_param": 0.8, "time": 100}.
-        Keys should match parameter names; None values are ignored.
-    Special key:
-        - "user_number": int - Number of users to load. Positive = first N, Negative = last N, None = all
-    base_folder : str, optional (default=None)
-        Root folder containing simulation data. Defaults to "Data" in the project root.
-
-    Returns
-    -------
-    list of tuples
-        List of tuples, each containing (user_history_df, venue_history_df, stats_df).
-        stats_df may be None if not available.
-    """
-    logger.info("Loading simulation data")
-    # Default: empty filters
-    if filters is None:
-        filters = {}
-
-    # Extract user_number from filters (not used for folder matching)
-    user_number = filters.get("user_number", None)
-    
-    # Remove user_number from filters for folder matching, and remove None values
-    filters_for_matching = {key: val for key, val in filters.items() 
-                           if val is not None and key != "user_number"}
-
-    # Default base folder
-    if base_folder is None:
-        project_root = os.path.dirname(os.path.dirname(
-            os.path.abspath(inspect.getfile(inspect.currentframe()))
-        ))
-        base_folder = os.path.join(project_root, "Data")
-
-    if not os.path.exists(base_folder):
-        return []
-
-    loaded_users = []
-
-    # Map filter keys to folder keys
-    key_map = {
-        "a_param": "a",
-        "b_param": "b",
-        "ro": "ro",
-        "gamma": "gamma",
-        "time": "time"
-    }
-
-    total_user_count = 0
-    matching_runs = []  # Store (folder_path, run_path, user_indices_list)
-    
-    for folder in os.listdir(base_folder):
-        folder_path = os.path.join(base_folder, folder)
-        if not os.path.isdir(folder_path):
-            continue
-
-        # Parse folder name
-        parts = folder.split("_")
-        if len(parts) % 2 != 0:
-            continue
-
-        params = {}
-        try:
-            for i in range(0, len(parts), 2):
-                key, val = parts[i], parts[i + 1]
-                params[key] = val
-        except Exception:
-            continue
-
-        # Convert params to Python types
-        converted = {}
-        for key, val in params.items():
-            if key == "time":
-                converted[key] = int(val)
-            else:
-                try:
-                    converted[key] = float(val)
-                except ValueError:
-                    converted[key] = val
-
-        # Apply filters (excluding user_number)
-        match = True
-        for f_key, f_value in filters_for_matching.items():
-            folder_key = key_map.get(f_key, f_key)
-            if converted.get(folder_key) != f_value:
-                match = False
-                break
-
-        if not match:
-            continue
-
-        # Collect user indices in each run
-        for run_folder in os.listdir(folder_path):
-            run_path = os.path.join(folder_path, run_folder)
-            if not os.path.isdir(run_path):
-                continue
-            
-            # Collect unique user indices with their numeric values for sorting
-            user_indices = []
-            for file in os.listdir(run_path):
-                if file.endswith("_history.parquet"):
-                    idx = file.split("_")[1]
-                    try:
-                        numeric_idx = int(idx)
-                        user_indices.append((numeric_idx, idx))
-                    except ValueError:
-                        user_indices.append((0, idx))  # fallback for non-numeric
-            
-            if len(user_indices) > 0:
-                # Sort by numeric index
-                user_indices.sort(key=lambda x: x[0])
-                user_indices = [idx_str for _, idx_str in user_indices]
-                
-                matching_runs.append((folder_path, run_path, user_indices))
-                total_user_count += len(user_indices)
-    
-    if total_user_count == 0:
-        logger.info("No matching simulation data found")
-        return []
-    
-    # ========== HANDLE user_number PARAMETER ==========
-    load_last = False
-    users_to_load = total_user_count
-    
-    if user_number is not None:
-        if user_number < 0:
-            load_last = True
-            user_number = abs(user_number)
-        users_to_load = min(user_number, total_user_count)
-        
-        if load_last:
-            logger.info(f"Found {total_user_count} users, loading last {users_to_load} users")
-        else:
-            logger.info(f"Found {total_user_count} users, loading first {users_to_load} users")
-    else:
-        logger.info(f"Found {total_user_count} users to load")
-    # ==================================================
-    
-    milestone = max(1, users_to_load // 10)
-
-    # Load data from matching runs
-    users_loaded = 0
-    skip_count = 0
-    
-    # If loading last user_number, calculate how many to skip
-    if user_number is not None and load_last:
-        skip_count = total_user_count - user_number
-    
-    for folder_path, run_path, user_indices in matching_runs:
-        for idx in user_indices:
-            # Skip users if we're loading last N
-            if skip_count > 0:
-                skip_count -= 1
-                continue
-            
-            # Stop if we've loaded enough users (for first N)
-            if user_number is not None and not load_last and users_loaded >= user_number:
-                break
-            
-            # Load this user's data
-            user_data = {}
-            
-            history_file = os.path.join(run_path, f"user_{idx}_history.parquet")
-            if os.path.exists(history_file):
-                user_data["user_history"] = pd.read_parquet(history_file)
-            
-            venue_file = os.path.join(run_path, f"user_{idx}_venue.parquet")
-            if os.path.exists(venue_file):
-                user_data["venue_history"] = pd.read_parquet(venue_file)
-            
-            stats_file = os.path.join(run_path, f"user_{idx}_stats.parquet")
-            if os.path.exists(stats_file):
-                user_data["stats"] = pd.read_parquet(stats_file)
-            
-            # Append if both history and venue exist
-            uh = user_data.get("user_history")
-            vh = user_data.get("venue_history")
-            st = user_data.get("stats", None)
-            
-            if uh is not None and vh is not None:
-                loaded_users.append((uh, vh, st))
-                users_loaded += 1
-                
-                # ========== PROGRESS TRACKING ==========
-                if users_loaded % milestone == 0 or users_loaded == users_to_load:
-                    percentage = (users_loaded / users_to_load) * 100
-                    logger.info(f"Loading progress: {percentage:.0f}% ({users_loaded}/{users_to_load} users)")
-                # ========================================
-                
-                # Stop if we've loaded enough
-                if user_number is not None and users_loaded >= user_number:
-                    break
-        
-        # Break outer loop if done
-        if user_number is not None and users_loaded >= user_number:
-            break
-
-    logger.info(f"Data loaded: {len(loaded_users)} users")
-
-    return loaded_users
-
-def get_trajectory_arrays(user, k_top=None):
-    """
-    Extract trajectory coordinates from user history as NumPy arrays.
-
-    This function processes the user's history data to extract x and y coordinates
-    of the trajectory, optionally filtering to include only the top-k most visited venues.
-
-    Parameters
-    ----------
-    user : User
-        An object with user_history and venue_history as lists of lists.
-    k_top : int, optional (default=None)
-        Number of top visited venues to include. If None, include all venues.
-
-    Returns
-    -------
-    x_traj : np.ndarray
-        X coordinates of the trajectory, starting with 0.
-    y_traj : np.ndarray
-        Y coordinates of the trajectory, starting with 0.
-    """
-    header = user.user_history[0]
-    data = user.user_history[1:]
-    idx_dest_x = header.index("Destination_x_coord")
-    idx_dest_y = header.index("Destination_y_coord")
-    idx_dest_name = header.index("Destination")
-
-    dest_x = np.array([row[idx_dest_x] for row in data], dtype=float)
-    dest_y = np.array([row[idx_dest_y] for row in data], dtype=float)
-    trajectory = [row[idx_dest_name] for row in data]
-
-    if k_top is not None:
-        venue_header = user.venue_history[0]
-        venue_data = user.venue_history[1:]
-        idx_venue_name = venue_header.index("Venue_name")
-        idx_visits = venue_header.index("Number of visits")
-
-        venue_visits = {row[idx_venue_name]: row[idx_visits] for row in venue_data}
-        top_k_venues = sorted(venue_visits, key=venue_visits.get, reverse=True)[:k_top]
-    else:
-        top_k_venues = None 
-
-    x_traj = [0]  
-    y_traj = [0]
-
-    for i, venue in enumerate(trajectory):
-        if (top_k_venues is None) or (venue in top_k_venues):
-            x_traj.append(dest_x[i])
-            y_traj.append(dest_y[i])
-
-    return np.array(x_traj), np.array(y_traj)
-
 def plot_S_over_time(user_history_list, filters = None, title = None, bins_per_decade=4):
     """
     Plot the exploration statistic S(t) over time on a log-log scale.
@@ -729,133 +980,98 @@ def plot_S_over_time(user_history_list, filters = None, title = None, bins_per_d
     filepath_save_plot(folder="plots", filters=filters)
 
 
-
-def dotted_histogram(numpy_array, bins_per_decade=4):
+def plot_S_over_time_from_df(s_over_time_list, filters=None, title=None, bins_per_decade=4):
     """
-    Compute a logarithmic histogram with density normalization.
-
-    This function creates logarithmically spaced bins for the input array,
-    computes frequencies, and normalizes to density. It filters out zero values
-    and returns only bins with positive density.
+    Plot S(t) — cumulative distinct venues visited — over time using
+    pre-computed s_over_time DataFrames from analysis_data/.
 
     Parameters
     ----------
-    numpy_array : array-like
-        Input array of values to histogram (must be positive).
-    bins_per_decade : int, optional (default=4)
-        Number of bins per decade for logarithmic spacing.
-
-    Returns
-    -------
-    centers_filtered : np.ndarray
-        Geometric centers of the bins with positive density.
-    density_filtered : np.ndarray
-        Normalized density values for the bins.
+    s_over_time_list : list of pd.DataFrame
+        Each DataFrame has columns ['clock', 's'].
+    filters : dict, optional
+        Used for the plot file name.
+    title : str, optional
+        Plot title.
+    bins_per_decade : int, optional
+        Log-axis binning density.
     """
-    array = numpy_array[numpy_array > 0]   # avoiding zeros
+    logger.info("Plotting S over time (from analysis data)")
 
-    min_array = array.min()
-    max_array = array.max()
+    if not s_over_time_list:
+        logger.warning("No S-over-time data available to plot")
+        return
 
-    log_min = np.log10(min_array)
-    log_max = np.log10(max_array)
+    clocks   = np.concatenate([df["clock"].values for df in s_over_time_list])
+    s_values = np.concatenate([df["s"].values     for df in s_over_time_list])
 
-    #Avoiding boundary problems using a margin
-    margin = 0.05
-    log_min -= margin
-    log_max += margin
+    min_c, max_c = clocks.min(), clocks.max()
+    log_min  = np.log10(min_c) - 0.05
+    log_max  = np.log10(max_c) + 0.05
+    num_bins = int(np.ceil((log_max - log_min) * bins_per_decade))
+    bin_edges = np.logspace(log_min, log_max, num_bins)
 
-    num_decades = log_max - log_min
-    num_bins = int(np.ceil(num_decades * bins_per_decade))
-
-    # Creation of logarithmic bins
-    bins = np.logspace(log_min, log_max, num_bins + 1)
-
-    # frequencies
-    counts, edges = np.histogram(array, bins=bins)
-
-    # bin logarithmic center
+    import scipy.stats
+    y_mean, edges, _ = scipy.stats.binned_statistic(
+        clocks, s_values, statistic='mean', bins=bin_edges)
     centers = np.sqrt(edges[:-1] * edges[1:])
 
-    # normailization
-    widths = np.diff(edges)
-    density = counts / widths / len(array)
-
-    mask = density > 0
-    centers_filtered = centers[mask]
-    density_filtered = density[mask]
-
-    return centers_filtered, density_filtered
-
-
-def plot_r_gyr_over_time(user_history_list, filters=None, title=None, bins_per_decade=4):
-    """
-    Plot the cumulative radius of gyration r_gyr(t) over time on a log scale.
-
-    This function computes the radius of gyration for each time step in the user histories
-    and plots the mean r_gyr(t) using logarithmic binning.
-
-    Parameters
-    ----------
-    user_history_list : list of pandas.DataFrame
-        List of DataFrames containing user history with 'Clock', 'Destination_x_coord',
-        and 'Destination_y_coord' columns.
-    filters : dict, optional
-        Dictionary of filters to be included in the plot title.
-    title : str, optional (default=None)
-        Title for the plot. If None, no title is set.
-    bins_per_decade : int, optional (default=4)
-        Number of bins per decade for logarithmic binning.
-
-    Returns
-    -------
-    None
-        The function generates and saves a plot but does not return any value.
-    """
-    logger.info("Plotting r_gyr over time")
-    clocks = np.array([])
-    r_gyr_values = np.array([])
-
-    for df in user_history_list:
-        clocks_temp = df['Clock'].values  
-        r_gyr_temp = []
-        for i in range(len(df)):
-            # seleziona tutte le righe fino alla riga corrente inclusa
-            traj_x = np.concatenate(([0], df.iloc[:i+1]['Destination_x_coord'].values))
-            traj_y = np.concatenate(([0], df.iloc[:i+1]['Destination_y_coord'].values))
-
-            x_cm = np.mean(traj_x)
-            y_cm = np.mean(traj_y)
-            r_gyr_val = np.sqrt(np.mean((traj_x - x_cm)**2 + (traj_y - y_cm)**2))
-            r_gyr_temp.append(r_gyr_val)
-
-        clocks = np.append(clocks, clocks_temp)
-        r_gyr_values = np.append(r_gyr_values, r_gyr_temp)
-
-    # bin logaritmici
-    min_clocks = clocks.min()
-    max_clocks = clocks.max()
-
-    log_min = np.log10(min_clocks) - 0.05
-    log_max = np.log10(max_clocks) + 0.05
-    num_decades = log_max - log_min
-    num_bins = int(np.ceil(num_decades * bins_per_decade))
-    bins_edges = np.logspace(log_min, log_max, num_bins)
-
-    r_gyr_mean, edges, _ = scipy.stats.binned_statistic(clocks, r_gyr_values, statistic='mean', bins=bins_edges)
-    centers = np.sqrt(edges[:-1] * edges[1:])  # centro geometrico per bin log
-
-    # plot
-    plt.figure(figsize=(8,5))
-    plt.scatter(centers, r_gyr_mean, marker='o')
+    plt.figure(figsize=(8, 5))
+    plt.scatter(centers, y_mean, marker='o')
     plt.xscale("log")
-    # plt.yscale("log")  # opzionale
+    plt.yscale("log")
     plt.xlabel("Clock")
-    plt.ylabel("Raggio di girazione r_gyr(t)")
+    plt.ylabel("S(t)")
     plt.grid(True, which="both", ls="--", alpha=0.5)
     if title:
         plt.title(title, fontsize=10)
-    
-    plt.tight_layout()
-    filepath_save_plot("plots" , filters=filters)
 
+    filepath_save_plot(folder="plots", filters=filters)
+
+
+def plot_r_gyr_over_time_from_df(rg_over_time_list, filters=None, title=None, bins_per_decade=4):
+    """
+    Plot r_gyr(t) — radius of gyration as a function of time — using
+    pre-computed rg_over_time DataFrames from analysis_data/.
+
+    Parameters
+    ----------
+    rg_over_time_list : list of pd.DataFrame
+        Each DataFrame has columns ['clock', 'rg'].
+    filters : dict, optional
+        Used for the plot file name.
+    title : str, optional
+        Plot title.
+    bins_per_decade : int, optional
+        Log-axis binning density.
+    """
+    logger.info("Plotting r_gyr over time (from analysis data)")
+
+    if not rg_over_time_list:
+        logger.warning("No rg-over-time data available to plot")
+        return
+
+    clocks    = np.concatenate([df["clock"].values for df in rg_over_time_list])
+    rg_values = np.concatenate([df["rg"].values    for df in rg_over_time_list])
+
+    min_c, max_c = clocks.min(), clocks.max()
+    log_min  = np.log10(min_c) - 0.05
+    log_max  = np.log10(max_c) + 0.05
+    num_bins = int(np.ceil((log_max - log_min) * bins_per_decade))
+    bin_edges = np.logspace(log_min, log_max, num_bins)
+
+    import scipy.stats
+    rg_mean, edges, _ = scipy.stats.binned_statistic(
+        clocks, rg_values, statistic='mean', bins=bin_edges)
+    centers = np.sqrt(edges[:-1] * edges[1:])
+
+    plt.figure(figsize=(8, 5))
+    plt.scatter(centers, rg_mean, marker='o')
+    plt.xscale("log")
+    plt.xlabel("Clock")
+    plt.ylabel("r_gyr(t)")
+    plt.grid(True, which="both", ls="--", alpha=0.5)
+    if title:
+        plt.title(title, fontsize=10)
+
+    filepath_save_plot(folder="plots", filters=filters)

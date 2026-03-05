@@ -4,200 +4,408 @@ import model.utils
 import pandas as pd
 import os
 from datetime import datetime
-from matplotlib import pyplot as plt
-from pprint import pprint
 
 import logging
 logger = logging.getLogger(__name__)
 
+
 class Simulation:
-    
-    def __init__(self, ro, gamma, a_param, b_param, user_number, time, plots_to_generate=None, sim_params=None, filters = None):
-                 #ro_filter, gamma_filter, a_param_filter, b_param_filter, time_filter):
-        self.ro = ro
-        self.gamma = gamma
-        self.a_param = a_param
-        self.b_param = b_param
-        self.user_number = user_number
-        self.time = time
-        self.plots_to_generate = plots_to_generate or []
-        self.sim_params = sim_params or {}
-        self.user = None
-        self.rg = None
+    """
+    three-phase mobility simulation pipeline:
+
+    Phase 1 - SIMULATE : run the EPR model for N users, save raw trajectories to raw_data/
+    Phase 2 - ANALYSIS : load raw trajectories, compute analysis quantities, save to analysis_data/
+    Phase 3 - PLOT     : load analysis data and generate all requested plots
+
+    Each phase is self-contained and receives only the parameters it needs:
+        run(simulate_params)            requires ro, gamma, a_param, b_param, user_number, time
+        run_analysis(analyse_params)    requires ro, gamma, a_param, b_param, time
+        load_analysis_data(plot_params) requires ro, gamma, a_param, b_param, time, [user_number]
+        plot(plot_list)
+    """
+
+    def __init__(self):
+        # Populated during run() -- holds User objects
         self.users_list = []
-        self.user_history_list = []
+
+        # Populated during load_analysis_data() -- used by plot()
         self.rg_list = []
         self.two_rg_list = []
-        self.filters = filters
+        self.venue_history_list = []
+        self.all_rg_over_time = []
+        self.all_s_over_time = []
 
+        # Single-user references for mobility / freq_distribution plots
         self.last_user_history = None
         self.last_venue_history = None
         self.last_stats = None
-        self.last_x_cm = None
-        self.last_y_cm = None
 
-    def run(self):
+        # Set during run(), needed by User objects at decision time
+        self.ro    = None
+        self.gamma = None
 
-        milestone = max(1, self.user_number // 10)  # 10% increments with a minimum of 1 user to avoid division by zero
-        logger.info(f"Starting simulation for {self.user_number} users...")
+        # Stored after run() for save_raw_data() folder naming
+        self._simulate_params = None
 
-        for i in range(self.user_number):
-            self.user = model.user.User(uid = f"User_{i}", a_param=self.a_param, b_param=self.b_param, simulation = self)
-            while self.user.clock < self.time:
-                self.user.make_decision()
-            self.user.calculate_statistics()
+        # Stored after load_analysis_data() for plot() titles/filters
+        self._plot_params = None
 
-            self.users_list.append(self.user)
-            self.rg_list.append(self.user.r_gyr)
-            self.two_rg_list.append(self.user.r_gyr_two)
+    # ==========================================================================
+    # PHASE 1: SIMULATE
+    # ==========================================================================
 
-            if (i + 1) % milestone == 0 or (i + 1) == self.user_number:
-                percentage = ((i + 1) / self.user_number) * 100
-                logger.info(f"Simulation progress: {percentage:.0f}% ({i + 1}/{self.user_number} users simulated)")
-
-    def load_data(self):
-        logger.info("Loading saved simulation data...")
-        loaded_users = model.utils.load_simulations_parquet(filters=self.filters)
-        #print((loaded_users))
-
-        actual_users_loaded = len(loaded_users)
-        if self.filters is None:
-            self.filters = {}
-        self.filters['user_number'] = actual_users_loaded #Replace the user_number filter with the actual number of users loaded, for accurate plot titles
-        logger.info(f"Updated filters: user_number set to {actual_users_loaded}")
-
-        for entry in loaded_users:
-            # entry is the tuple (df1, df2, stats)
-            self.last_user_history = entry[0]
-            self.last_venue_history = entry[1]
-            self.last_stats = entry[2]
-
-            if self.last_stats is not None:
-                rg_value = self.last_stats.loc[self.last_stats['metric'] == "radius of gyration", 'value'].iloc[0]
-                rg_two_value = self.last_stats.loc[self.last_stats['metric'] == "radius of gyration two", 'value'].iloc[0]
-                self.last_x_cm = self.last_stats.loc[self.last_stats['metric'] == "x_center of mass", 'value'].iloc[0]
-                self.last_y_cm = self.last_stats.loc[self.last_stats['metric'] == "y_center of mass", 'value'].iloc[0]
-                self.rg_list.append(rg_value) 
-                self.two_rg_list.append(rg_two_value)
-
-            self.user_history_list.append(entry[0])
-
-
-
-    def save_users_parquet(self, base_folder=None):
+    def run(self, simulate_params):
         """
-        Save user history, venue history and stats to Parquet files.
+        Run the EPR simulation and store results in self.users_list.
 
-        Folder structure:
-        base_folder/
+        Parameters
+        ----------
+        simulate_params : dict
+            Must contain: "ro", "gamma", "a_param", "b_param", "user_number", "time".
+        """
+        ro          = simulate_params["ro"]
+        gamma       = simulate_params["gamma"]
+        a_param     = simulate_params["a_param"]
+        b_param     = simulate_params["b_param"]
+        user_number = simulate_params["user_number"]
+        time        = simulate_params["time"]
+
+        # Store on self so User objects can access ro/gamma via self.simulation,
+        # and save_raw_data() can build the correct folder name
+        self.ro              = ro
+        self.gamma           = gamma
+        self.a_param         = a_param
+        self.b_param         = b_param
+        self._simulate_params = simulate_params
+
+        milestone = max(1, user_number // 10)
+        logger.info(f"Starting simulation for {user_number} users...")
+
+        for i in range(user_number):
+            user = model.user.User(
+                uid=f"User_{i}",
+                a_param=a_param,
+                b_param=b_param,
+                simulation=self
+            )
+            while user.clock < time:
+                user.make_decision()
+
+            self.users_list.append(user)
+
+            if (i + 1) % milestone == 0 or (i + 1) == user_number:
+                pct = ((i + 1) / user_number) * 100
+                logger.info(f"Simulation progress: {pct:.0f}% ({i+1}/{user_number} users)")
+
+    def save_raw_data(self, base_folder=None):
+        """
+        Serialise user_history and venue_history for every simulated user to
+        Parquet files under raw_data/.
+
+        Must be called after run().
+
+        Folder layout
+        -------------
+        raw_data/
             ro_{ro}_gamma_{gamma}_a_{a_param}_b_{b_param}_time_{time}/
-                {unique_run_id}/
+                {YYYYMMDD_HHMMSS_ffffff}/
                     user_0_history.parquet
                     user_0_venue.parquet
                     ...
+
+        Parameters
+        ----------
+        base_folder : str, optional
+            Override for the raw_data root directory.
+
+        Returns
+        -------
+        str
+            Path to the timestamped run folder that was just created.
         """
+        logger.info("Saving raw simulation data...")
 
-        logger.info("Saving simulation results...")
-
-        if base_folder is None:
-            project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            base_folder = os.path.join(project_root, "data")
-        os.makedirs(base_folder, exist_ok=True)
-
-        folder_name = f"ro_{self.ro}_gamma_{self.gamma}_a_{self.a_param}_b_{self.b_param}_time_{self.time}"
-        folder_path = os.path.join(base_folder, folder_name)
-        os.makedirs(folder_path, exist_ok=True)
-
-        run_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        run_folder_path = os.path.join(folder_path, run_id)
-        os.makedirs(run_folder_path, exist_ok=True)
-
-        # ========== PROGRESS TRACKING ==========
-        total_users = len(self.users_list)
-        milestone = max(1, total_users // 10)  # 10% increments with a minimum of 1 user to avoid division by zero
-        # ========================================
+        run_folder = self._make_run_folder("raw_data", self._simulate_params, base_folder)
+        total     = len(self.users_list)
+        milestone = max(1, total // 10)
 
         for i, user in enumerate(self.users_list):
-            # Save user_history
-            user_df = pd.DataFrame(user.user_history[1:], columns=user.user_history[0])
-            user_df.to_parquet(os.path.join(run_folder_path, f"user_{i}_history.parquet"), index=False)
-
-            # Save venue_history
+            user_df  = pd.DataFrame(user.user_history[1:],  columns=user.user_history[0])
             venue_df = pd.DataFrame(user.venue_history[1:], columns=user.venue_history[0])
-            venue_df.to_parquet(os.path.join(run_folder_path, f"user_{i}_venue.parquet"), index=False)
 
-            # Save stats if they exist
-            if hasattr(user, "stats") and user.stats is not None:
-                stats_df = pd.DataFrame(user.stats[1:], columns=user.stats[0])
-                stats_df.to_parquet(os.path.join(run_folder_path, f"user_{i}_stats.parquet"), index=False)
+            user_df.to_parquet( os.path.join(run_folder, f"user_{i}_history.parquet"), index=False)
+            venue_df.to_parquet(os.path.join(run_folder, f"user_{i}_venue.parquet"),   index=False)
 
-            # ========== PROGRESS TRACKING ==========
-            if (i + 1) % milestone == 0 or (i + 1) == total_users:
-                percentage = ((i + 1) / total_users) * 100
-                logger.info(f"Progress: {percentage:.0f}% ({i + 1}/{total_users} users saved)")
-            # ========================================
+            if (i + 1) % milestone == 0 or (i + 1) == total:
+                pct = ((i + 1) / total) * 100
+                logger.info(f"Save progress: {pct:.0f}% ({i+1}/{total} users saved)")
 
-        logger.info("Simulation results saved...")
+        logger.info(f"Raw data saved to: {run_folder}")
+        return run_folder
 
-    def plot(self):
+    # ==========================================================================
+    # PHASE 2: ANALYSIS
+    # ==========================================================================
 
-        if "mobility" in self.plots_to_generate:
-            model.utils.plot_mobility_visualization(
-            self.last_user_history,
-            self.last_venue_history,
-            stats = self.last_stats,
-            filters=self.filters,
-            title=model.utils.build_plot_title("User Mobility", self.filters)
-            )
+    def run_analysis(self, analyse_params, raw_run_folder=None, base_folder=None):
+        """
+        Compute all analysis quantities from raw trajectory data and save them
+        to analysis_data/.
 
-        if "rg_distribution" in self.plots_to_generate:
-            model.utils.plot_rg_distribution(
-            self.rg_list,
-            filters=self.filters,
-            title=model.utils.build_plot_title("RG Distribution", self.filters)
-            )
+        Calling patterns
+        ----------------
+        (a) Standalone (ANALYSE mode)
+            raw_run_folder=None -- data loaded from raw_data/ via analyse_params.
 
-        if "freq_distribution" in self.plots_to_generate:
-            model.utils.plot_frequency_distribution(
-            self.last_venue_history,
-            self.gamma,
-            filters=self.filters,
-            title=model.utils.build_plot_title("Frequency Distribution", self.filters)
-            )
+        (b) Chained (SIMULATE_AND_ANALYSE mode)
+            Pass raw_run_folder returned by save_raw_data(). Users already in
+            memory are used directly without any disk read.
 
+        Files saved per user
+        --------------------
+        user_{i}_history.parquet      : full user trajectory (copy from raw)
+        user_{i}_venue.parquet        : venue visit counts   (copy from raw)
+        user_{i}_stats.parquet        : rg, rg_two, x_cm, y_cm
+        user_{i}_rg_over_time.parquet : clock vs rg(t) series
+        user_{i}_s_over_time.parquet  : clock vs S(t) series
 
-        if "two_radius" in self.plots_to_generate:
-            model.utils.plot_two_radius_vs_radius(
-            self.rg_list,
-            self.two_rg_list,
-            filters=self.filters,
-            title=model.utils.build_plot_title("Two-RG vs RG", self.filters)
-            )
+        Parameters
+        ----------
+        analyse_params : dict
+            Must contain: "ro", "gamma", "a_param", "b_param", "time".
+            Note: "user_number" is intentionally absent -- analysis always
+            processes complete run folders, never a subset of users.
+        raw_run_folder : str, optional
+            Path to a specific raw_data run folder (simulate_and_analyse mode).
+        base_folder : str, optional
+            Override for the analysis_data root directory.
 
-        if "s_over_time" in self.plots_to_generate:
-            model.utils.plot_S_over_time(
-            self.user_history_list,
-            filters=self.filters,
-            bins_per_decade=10,
-            title=model.utils.build_plot_title("S over time", self.filters)
-            )
+        Returns
+        -------
+        str
+            Path to the timestamped analysis run folder that was just created.
+        """
+        logger.info("Starting analysis phase...")
 
-        if "rg_over_time" in self.plots_to_generate:
-            model.utils.plot_r_gyr_over_time(
-                self.user_history_list,
-                filters=self.filters,
-                bins_per_decade=10,
-                title=model.utils.build_plot_title("Radius of Gyration over time", self.filters)
+        # Collect raw run folder paths to lock after analysis
+        raw_folders_to_lock = set()
+
+        # Load from disk only when there are no in-memory users
+        if not self.users_list:
+            if raw_run_folder is not None:
+                logger.info(f"Loading raw data from: {raw_run_folder}")
+                i = 0
+                while True:
+                    h_path = os.path.join(raw_run_folder, f"user_{i}_history.parquet")
+                    if not os.path.exists(h_path):
+                        break
+                    v_path = os.path.join(raw_run_folder, f"user_{i}_venue.parquet")
+                    uh = pd.read_parquet(h_path)
+                    vh = pd.read_parquet(v_path) if os.path.exists(v_path) else None
+                    self.users_list.append((uh, vh))
+                    i += 1
+                raw_folders_to_lock.add(raw_run_folder)
+                logger.info(f"Loaded {i} users from raw run folder")
+            else:
+                logger.info("Loading raw data via analyse_params...")
+                loaded = model.utils.load_raw_parquet(
+                    filters=analyse_params,
+                    base_folder=base_folder,
+                    return_run_folders=True,
                 )
-        
-            
- 
-        
+                self.users_list = [entry["data"] for entry in loaded]
+                raw_folders_to_lock.update(entry["run_folder"] for entry in loaded)
+                logger.info(f"Loaded {len(self.users_list)} users from raw_data")
+        elif raw_run_folder is not None:
+            # simulate_and_analyse: users in memory, raw folder still known
+            raw_folders_to_lock.add(raw_run_folder)
 
+        analysis_folder = self._make_run_folder("analysis_data", analyse_params, base_folder)
+        total     = len(self.users_list)
+        milestone = max(1, total // 10)
 
+        for i, user_entry in enumerate(self.users_list):
+            if isinstance(user_entry, model.user.User):
+                user_history_df  = pd.DataFrame(
+                    user_entry.user_history[1:],  columns=user_entry.user_history[0])
+                venue_history_df = pd.DataFrame(
+                    user_entry.venue_history[1:], columns=user_entry.venue_history[0])
+            elif isinstance(user_entry, dict):
+                user_history_df  = user_entry["user_history"]
+                venue_history_df = user_entry["venue_history"]
+            else:
+                user_history_df, venue_history_df = user_entry
 
+            stats_df        = model.utils.compute_stats(user_history_df)
+            rg_over_time_df = model.utils.compute_rg_over_time(user_history_df)
+            s_over_time_df  = model.utils.compute_s_over_time(user_history_df)
 
-        
+            user_history_df.to_parquet(
+                os.path.join(analysis_folder, f"user_{i}_history.parquet"),      index=False)
+            venue_history_df.to_parquet(
+                os.path.join(analysis_folder, f"user_{i}_venue.parquet"),        index=False)
+            stats_df.to_parquet(
+                os.path.join(analysis_folder, f"user_{i}_stats.parquet"),        index=False)
+            rg_over_time_df.to_parquet(
+                os.path.join(analysis_folder, f"user_{i}_rg_over_time.parquet"), index=False)
+            s_over_time_df.to_parquet(
+                os.path.join(analysis_folder, f"user_{i}_s_over_time.parquet"),  index=False)
 
+            if (i + 1) % milestone == 0 or (i + 1) == total:
+                pct = ((i + 1) / total) * 100
+                logger.info(f"Analysis progress: {pct:.0f}% ({i+1}/{total} users)")
 
-        
+        logger.info(f"Analysis data saved to: {analysis_folder}")
+
+        for folder in raw_folders_to_lock:
+            lock_path = os.path.join(folder, "_analyzed.lock")
+            with open(lock_path, "w") as f:
+                f.write(f"Analyzed -> {analysis_folder}\n")
+            logger.info(f"Locked raw folder: {folder}")
+
+        return analysis_folder
+
+    # ==========================================================================
+    # PHASE 3: PLOT
+    # ==========================================================================
+
+    def load_analysis_data(self, plot_params, base_folder=None):
+        """
+        Load pre-computed analysis data from analysis_data/ into memory.
+
+        Parameters
+        ----------
+        plot_params : dict
+            Must contain: "ro", "gamma", "a_param", "b_param", "time".
+            Optional: "user_number" (positive = first N, negative = last N, absent = all).
+        base_folder : str, optional
+            Override for the analysis_data root directory.
+        """
+        logger.info("Loading analysis data...")
+
+        loaded = model.utils.load_analysis_parquet(filters=plot_params, base_folder=base_folder)
+        logger.info(f"Loaded {len(loaded)} users from analysis_data")
+
+        # gamma needed by freq_distribution plot
+        self.gamma = plot_params.get("gamma")
+
+        # Keep a copy of plot_params with the actual user count for titles/file names
+        self._plot_params = {**plot_params, "user_number": len(loaded)}
+
+        self.rg_list = []
+        self.two_rg_list = []
+        self.venue_history_list = []
+        self.all_rg_over_time = []
+        self.all_s_over_time = []
+
+        for entry in loaded:
+            stats_df         = entry.get("stats")
+            venue_history_df = entry.get("venue_history")
+            rg_over_time_df  = entry.get("rg_over_time")
+            s_over_time_df   = entry.get("s_over_time")
+            user_history_df  = entry.get("user_history")
+
+            self.last_user_history  = user_history_df
+            self.last_venue_history = venue_history_df
+            self.last_stats         = stats_df
+
+            if stats_df is not None:
+                self.rg_list.append(
+                    stats_df.loc[stats_df['metric'] == "radius of gyration",     'value'].iloc[0])
+                self.two_rg_list.append(
+                    stats_df.loc[stats_df['metric'] == "radius of gyration two", 'value'].iloc[0])
+                self.last_x_cm = stats_df.loc[stats_df['metric'] == "x_center of mass", 'value'].iloc[0]
+                self.last_y_cm = stats_df.loc[stats_df['metric'] == "y_center of mass", 'value'].iloc[0]
+
+            if venue_history_df is not None:
+                self.venue_history_list.append(venue_history_df)
+            if rg_over_time_df is not None:
+                self.all_rg_over_time.append(rg_over_time_df)
+            if s_over_time_df is not None:
+                self.all_s_over_time.append(s_over_time_df)
+
+    def plot(self, plot_list):
+        """
+        Generate all plots listed in plot_list.
+
+        Must be called after load_analysis_data().
+
+        Parameters
+        ----------
+        plot_list : list of str
+            Accepted values: "mobility", "rg_distribution", "freq_distribution",
+            "two_radius", "s_over_time", "rg_over_time".
+        """
+        p = self._plot_params
+
+        if "mobility" in plot_list:
+            model.utils.plot_mobility_visualization(
+                self.last_user_history, self.last_venue_history,
+                stats=self.last_stats,
+                filters=p, title=model.utils.build_plot_title("User Mobility", p)
+            )
+        if "rg_distribution" in plot_list:
+            model.utils.plot_rg_distribution(
+                self.rg_list,
+                filters=p, title=model.utils.build_plot_title("RG Distribution", p)
+            )
+        if "freq_distribution" in plot_list:
+            model.utils.plot_frequency_distribution(
+                self.last_venue_history, self.gamma,
+                filters=p, title=model.utils.build_plot_title("Frequency Distribution", p)
+            )
+        if "two_radius" in plot_list:
+            model.utils.plot_two_radius_vs_radius(
+                self.rg_list, self.two_rg_list,
+                filters=p, title=model.utils.build_plot_title("Two-RG vs RG", p)
+            )
+        if "s_over_time" in plot_list:
+            model.utils.plot_S_over_time_from_df(
+                self.all_s_over_time, filters=p, bins_per_decade=10,
+                title=model.utils.build_plot_title("S over time", p)
+            )
+        if "rg_over_time" in plot_list:
+            model.utils.plot_r_gyr_over_time_from_df(
+                self.all_rg_over_time, filters=p, bins_per_decade=10,
+                title=model.utils.build_plot_title("Radius of Gyration over time", p)
+            )
+
+    # ==========================================================================
+    # UTILITY
+    # ==========================================================================
+
+    def _make_run_folder(self, data_type, params, base_folder=None):
+        """
+        Create and return a timestamped run folder under a data_type root.
+
+        Folder hierarchy:
+            <base_folder>/
+                ro_{ro}_gamma_{gamma}_a_{a_param}_b_{b_param}_time_{time}/
+                    {YYYYMMDD_HHMMSS_ffffff}/
+
+        Parameters
+        ----------
+        data_type : str
+            e.g. "raw_data" or "analysis_data".
+        params : dict
+            Must contain "ro", "gamma", "a_param", "b_param", "time".
+        base_folder : str, optional
+            Defaults to project_root/<data_type>.
+
+        Returns
+        -------
+        str
+            Path to the newly created timestamped run folder.
+        """
+        if base_folder is None:
+            project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            base_folder  = os.path.join(project_root, data_type)
+
+        param_folder = os.path.join(
+            base_folder,
+            f"ro_{params['ro']}_gamma_{params['gamma']}"
+            f"_a_{params['a_param']}_b_{params['b_param']}_time_{params['time']}"
+        )
+        run_folder = os.path.join(param_folder, datetime.now().strftime("%Y%m%d_%H%M%S_%f"))
+        os.makedirs(run_folder, exist_ok=True)
+        return run_folder
