@@ -436,12 +436,12 @@ def compute_s_over_time(user_history_df):
 # LOADERS
 # =============================================================================
 
-def load_parquet_folder(base_folder, filters, file_map, return_run_folders=False):
+def load_parquet_folder(base_folder, filters, file_map, grid=False, return_run_folders=False):
     """
     Generic loader for per-user Parquet datasets stored under a parameter folder.
 
     This function is the single shared loading implementation used by both
-    load_raw_parquet() and load_analysis_parquet().  It scans base_folder for
+    load_raw_parquet() and load_analysis_parquet(). It scans base_folder for
     parameter sub-folders that match the supplied filters, then loads the files
     described by file_map for each user found.
 
@@ -454,19 +454,28 @@ def load_parquet_folder(base_folder, filters, file_map, return_run_folders=False
                 user_0_{suffix_2}.parquet
                 ...
 
+    For grid simulations, the parameter folder is extended with grid dimensions:
+        ro_{ro}_gamma_{gamma}_a_{a}_b_{b}_time_{time}_clen_{clen}_cnum_{cnum}/
+
     Parameters
     ----------
     base_folder : str
         Root directory to scan (e.g. the full path to raw_data/ or analysis_data/).
     filters : dict
-        Parameter filters with None values and "user_number" already removed.
+        Parameter filters with None values, "user_number" and "grid" already removed.
         Keys should match simulation parameter names
         ("ro", "gamma", "a_param", "b_param", "time").
+        For grid simulations, "cell_lenght" and "cell_number" may also be present.
     file_map : dict
         Maps a result-dict key to the per-user filename suffix.
         Example: {"user_history": "_history.parquet", "venue_history": "_venue.parquet"}
         The first key in file_map is used to discover which user indices exist in a run
         folder (i.e. it must be present for every user).
+    grid : bool, optional (default=False)
+        Whether to match grid simulation folders (containing clen/cnum tokens) or
+        non-grid folders. Folders whose grid status does not match this flag are
+        silently skipped, preventing cross-contamination between grid and non-grid runs
+        with otherwise identical parameters.
     return_run_folders : bool, optional (default=False)
         When False, returns plain user-data dicts (keys from file_map).
         When True, wraps each entry as {"data": <user_dict>, "run_folder": <path>}
@@ -486,27 +495,37 @@ def load_parquet_folder(base_folder, filters, file_map, return_run_folders=False
     The "user_number" logic (first/last N) is handled by the callers
     load_raw_parquet() and load_analysis_parquet() before calling this function,
     so this function always loads all users that survive the filter.
+    The "grid" key is handled separately via the grid parameter and must not
+    appear in filters; callers are responsible for removing it beforehand.
     """
-    # Map from simulation-parameter names to the token names used in folder names
-    key_map = {
-        "ro":      "ro",
-        "gamma":   "gamma",
-        "a_param": "a",
-        "b_param": "b",
-        "time":    "time",
-    }
+    if grid == True:
+        key_map = {
+            "ro":           "ro",
+            "gamma":        "gamma",
+            "a_param":      "a",
+            "b_param":      "b",
+            "time":         "time",
+            "cell_lenght":  "clen",
+            "cell_number":  "cnum",
+        }
+    elif grid == False:
+        key_map = {
+            "ro":           "ro",
+            "gamma":        "gamma",
+            "a_param":      "a",
+            "b_param":      "b",
+            "time":         "time",
+        }
 
-    # Primary suffix is the first entry — used to discover user indices
     primary_suffix = next(iter(file_map.values()))
 
-    matching_runs = []   # list of (run_path, sorted_user_indices)
+    matching_runs = []
 
     for folder_name in os.listdir(base_folder):
         folder_path = os.path.join(base_folder, folder_name)
         if not os.path.isdir(folder_path):
             continue
 
-        # Parse "token_value_token_value_..." folder names
         parts = folder_name.split("_")
         if len(parts) % 2 != 0:
             continue
@@ -515,7 +534,6 @@ def load_parquet_folder(base_folder, filters, file_map, return_run_folders=False
         except Exception:
             continue
 
-        # Convert to Python types (time → int, everything else → float)
         converted = {}
         for k, v in raw_params.items():
             if k == "time":
@@ -529,23 +547,24 @@ def load_parquet_folder(base_folder, filters, file_map, return_run_folders=False
                 except ValueError:
                     converted[k] = v
 
-        # Check all filter conditions
+        # Scarta cartelle che non corrispondono alla modalità grid richiesta
+        folder_has_grid = "clen" in converted and "cnum" in converted
+        if grid != folder_has_grid:
+            continue
+
         if any(converted.get(key_map.get(fk, fk)) != fv
                for fk, fv in filters.items()):
             continue
 
-        # Collect all run sub-folders
         for run_folder in os.listdir(folder_path):
             run_path = os.path.join(folder_path, run_folder)
             if not os.path.isdir(run_path):
                 continue
 
-            # Skip run folders that have already been analyzed
             if os.path.exists(os.path.join(run_path, "_analyzed.lock")):
                 logger.debug(f"Skipping already-analyzed run folder: {run_path}")
                 continue
 
-            # Discover user indices from primary-suffix files
             user_indices = []
             for fname in os.listdir(run_path):
                 if fname.endswith(primary_suffix):
@@ -559,7 +578,6 @@ def load_parquet_folder(base_folder, filters, file_map, return_run_folders=False
                 user_indices.sort(key=lambda x: x[0])
                 matching_runs.append((run_path, [s for _, s in user_indices]))
 
-    # Load every matched user
     loaded = []
     for run_path, user_indices in matching_runs:
         for idx in user_indices:
@@ -567,7 +585,6 @@ def load_parquet_folder(base_folder, filters, file_map, return_run_folders=False
             for key, suffix in file_map.items():
                 fpath = os.path.join(run_path, f"user_{idx}{suffix}")
                 entry[key] = pd.read_parquet(fpath) if os.path.exists(fpath) else None
-            # Only include users where the primary file was present
             if entry[next(iter(file_map))] is not None:
                 if return_run_folders:
                     loaded.append({"data": entry, "run_folder": run_path})
@@ -576,8 +593,7 @@ def load_parquet_folder(base_folder, filters, file_map, return_run_folders=False
 
     return loaded
 
-
-def load_raw_parquet(filters=None, base_folder=None, return_run_folders=False):
+def load_raw_parquet(filters=None, grid = False, return_run_folders=False):
     """
     Load raw simulation data (user_history, venue_history) from raw_data/.
 
@@ -585,10 +601,9 @@ def load_raw_parquet(filters=None, base_folder=None, return_run_folders=False):
     ----------
     filters : dict, optional
         Parameter filters. Accepted keys: "ro", "gamma", "a_param", "b_param",
-        "time", "user_number".
+        "time", "user_number", "cell_lenght", "cell_number".
         "user_number": positive = first N users, negative = last N, absent = all.
-    base_folder : str, optional
-        Override for the raw_data root directory.
+        Include "cell_lenght" and "cell_number" to match grid simulation folders.
     return_run_folders : bool, optional (default=False)
         When False (default), returns a plain list of dicts with keys
         "user_history" and "venue_history" — backward-compatible behaviour.
@@ -608,13 +623,11 @@ def load_raw_parquet(filters=None, base_folder=None, return_run_folders=False):
 
     user_number = filters.get("user_number", None)
     filters_clean = {k: v for k, v in filters.items()
-                     if v is not None and k != "user_number"}
-
-    if base_folder is None:
-        project_root = os.path.dirname(os.path.dirname(
-            os.path.abspath(inspect.getfile(inspect.currentframe()))
-        ))
-        base_folder = os.path.join(project_root, "raw_data")
+                 if v is not None and k != "user_number" and k != "grid"}
+    project_root = os.path.dirname(os.path.dirname(
+        os.path.abspath(inspect.getfile(inspect.currentframe()))
+    ))
+    base_folder = os.path.join(project_root, "raw_data")
 
     if not os.path.exists(base_folder):
         logger.warning(f"raw_data folder not found: {base_folder}")
@@ -625,7 +638,9 @@ def load_raw_parquet(filters=None, base_folder=None, return_run_folders=False):
         "venue_history": "_venue.parquet",
     }
 
-    loaded = load_parquet_folder(base_folder, filters_clean, file_map,
+    grid = filters.get("grid", grid)
+
+    loaded = load_parquet_folder(base_folder, filters_clean, file_map, grid=grid,
                                  return_run_folders=return_run_folders)
     loaded = _apply_user_number_slice(loaded, user_number)
 
@@ -633,7 +648,7 @@ def load_raw_parquet(filters=None, base_folder=None, return_run_folders=False):
     return loaded
 
 
-def load_analysis_parquet(filters=None, base_folder=None):
+def load_analysis_parquet(filters=None):
     """
     Load analysis data from analysis_data/.
 
@@ -642,8 +657,6 @@ def load_analysis_parquet(filters=None, base_folder=None):
     filters : dict, optional
         Parameter filters. Accepted keys: "ro", "gamma", "a_param", "b_param",
         "time", "user_number".
-    base_folder : str, optional
-        Override for the analysis_data root directory.
 
     Returns
     -------
@@ -661,11 +674,10 @@ def load_analysis_parquet(filters=None, base_folder=None):
     filters_clean = {k: v for k, v in filters.items()
                      if v is not None and k != "user_number"}
 
-    if base_folder is None:
-        project_root = os.path.dirname(os.path.dirname(
-            os.path.abspath(inspect.getfile(inspect.currentframe()))
-        ))
-        base_folder = os.path.join(project_root, "analysis_data")
+    project_root = os.path.dirname(os.path.dirname(
+        os.path.abspath(inspect.getfile(inspect.currentframe()))
+    ))
+    base_folder = os.path.join(project_root, "analysis_data")
 
     if not os.path.exists(base_folder):
         logger.warning(f"analysis_data folder not found: {base_folder}")

@@ -18,9 +18,12 @@ class Simulation:
     Phase 3 - PLOT     : load analysis data and generate all requested plots
 
     Each phase is self-contained and receives only the parameters it needs:
-        run(simulate_params)            requires ro, gamma, a_param, b_param, user_number, time
-        run_analysis(analyse_params)    requires ro, gamma, a_param, b_param, time
-        load_analysis_data(plot_params) requires ro, gamma, a_param, b_param, time, [user_number]
+        run(simulate_params, grid_params)   requires ro, gamma, a_param, b_param, user_number, time
+                                            grid_params optional: cell_lenght, cell_number
+        run_analysis(analyse_params, grid_params)
+                                            requires ro, gamma, a_param, b_param, time
+                                            grid_params optional: cell_lenght, cell_number
+        load_analysis_data(plot_params)     requires ro, gamma, a_param, b_param, time, [user_number]
         plot(plot_list)
     """
 
@@ -54,7 +57,7 @@ class Simulation:
     # PHASE 1: SIMULATE
     # ==========================================================================
 
-    def run(self, simulate_params):
+    def run(self, simulate_params, grid_params=None):
         """
         Run the EPR simulation and store results in self.users_list.
 
@@ -69,6 +72,7 @@ class Simulation:
         b_param     = simulate_params["b_param"]
         user_number = simulate_params["user_number"]
         time        = simulate_params["time"]
+        grid_exists = simulate_params["grid"] 
 
         # Store on self so User objects can access ro/gamma via self.simulation,
         # and save_raw_data() can build the correct folder name
@@ -77,6 +81,12 @@ class Simulation:
         self.a_param         = a_param
         self.b_param         = b_param
         self._simulate_params = simulate_params
+        self.grid_exists     = grid_exists
+
+        if grid_exists == True:
+            self._grid_params = grid_params
+            self.grid_cell_lenght = grid_params["cell_lenght"]
+            self.grid_cell_number = grid_params["cell_number"]
 
         milestone = max(1, user_number // 10)
         logger.info(f"Starting simulation for {user_number} users...")
@@ -86,6 +96,7 @@ class Simulation:
                 uid=f"User_{i}",
                 a_param=a_param,
                 b_param=b_param,
+                grid=grid_exists,
                 simulation=self
             )
             while user.clock < time:
@@ -97,10 +108,11 @@ class Simulation:
                 pct = ((i + 1) / user_number) * 100
                 logger.info(f"Simulation progress: {pct:.0f}% ({i+1}/{user_number} users)")
 
-    def save_raw_data(self, base_folder=None):
+    def save_raw_data(self):
         """
         Serialise user_history and venue_history for every simulated user to
-        Parquet files under raw_data/.
+        Parquet files under raw_data/. When a grid is active, the grid matrix
+        is also saved per user.
 
         Must be called after run().
 
@@ -111,12 +123,8 @@ class Simulation:
                 {YYYYMMDD_HHMMSS_ffffff}/
                     user_0_history.parquet
                     user_0_venue.parquet
+                    [user_0_grid.parquet]   (only when grid is active)
                     ...
-
-        Parameters
-        ----------
-        base_folder : str, optional
-            Override for the raw_data root directory.
 
         Returns
         -------
@@ -125,7 +133,10 @@ class Simulation:
         """
         logger.info("Saving raw simulation data...")
 
-        run_folder = self._make_run_folder("raw_data", self._simulate_params, base_folder)
+        if self.grid_exists:
+            run_folder = self._make_run_folder("raw_data", self._simulate_params, self._grid_params)
+        else:
+            run_folder = self._make_run_folder("raw_data", self._simulate_params)
         total     = len(self.users_list)
         milestone = max(1, total // 10)
 
@@ -135,6 +146,11 @@ class Simulation:
 
             user_df.to_parquet( os.path.join(run_folder, f"user_{i}_history.parquet"), index=False)
             venue_df.to_parquet(os.path.join(run_folder, f"user_{i}_venue.parquet"),   index=False)
+
+            if self.grid_exists:
+                grid_df = pd.DataFrame(user.grid.matrix)
+                grid_df.columns = grid_df.columns.astype(str)
+                grid_df.to_parquet(os.path.join(run_folder, f"user_{i}_grid.parquet"), index=False)
 
             if (i + 1) % milestone == 0 or (i + 1) == total:
                 pct = ((i + 1) / total) * 100
@@ -147,7 +163,7 @@ class Simulation:
     # PHASE 2: ANALYSIS
     # ==========================================================================
 
-    def run_analysis(self, analyse_params, raw_run_folder=None, base_folder=None):
+    def run_analysis(self, analyse_params, raw_run_folder=None, grid_params=None):
         """
         Compute all analysis quantities from raw trajectory data and save them
         to analysis_data/.
@@ -156,10 +172,15 @@ class Simulation:
         ----------------
         (a) Standalone (ANALYSE mode)
             raw_run_folder=None -- data loaded from raw_data/ via analyse_params.
+            grid_params must be supplied when the simulation was run with a grid,
+            so that the correct raw_data folder is located and the analysis_data
+            folder is named consistently.
 
         (b) Chained (SIMULATE_AND_ANALYSE mode)
             Pass raw_run_folder returned by save_raw_data(). Users already in
             memory are used directly without any disk read.
+            grid_params is taken from self._grid_params when not explicitly
+            provided (automatically set during run()).
 
         Files saved per user
         --------------------
@@ -177,8 +198,10 @@ class Simulation:
             processes complete run folders, never a subset of users.
         raw_run_folder : str, optional
             Path to a specific raw_data run folder (simulate_and_analyse mode).
-        base_folder : str, optional
-            Override for the analysis_data root directory.
+        grid_params : dict, optional
+            Grid parameters dict with keys "cell_lenght" and "cell_number".
+            Required when the simulation used a grid. In simulate_and_analyse
+            mode this is inferred automatically from self._grid_params.
 
         Returns
         -------
@@ -187,11 +210,16 @@ class Simulation:
         """
         logger.info("Starting analysis phase...")
 
+        # In simulate_and_analyse mode, inherit grid_params from the run phase
+        if grid_params is None and getattr(self, "_grid_params", None) is not None:
+            grid_params = self._grid_params
+
         # Collect raw run folder paths to lock after analysis
         raw_folders_to_lock = set()
 
         # Load from disk only when there are no in-memory users
         if not self.users_list:
+            #Directly callable. Main doesnt include this functionality
             if raw_run_folder is not None:
                 logger.info(f"Loading raw data from: {raw_run_folder}")
                 i = 0
@@ -207,10 +235,14 @@ class Simulation:
                 raw_folders_to_lock.add(raw_run_folder)
                 logger.info(f"Loaded {i} users from raw run folder")
             else:
+                #Analyse mode: load from raw_data/ using analyse_params filters
                 logger.info("Loading raw data via analyse_params...")
+                filters = {k: v for k, v in analyse_params.items() if k != "grid"}
+                if analyse_params["grid"] == True:
+                    filters.update(grid_params)
                 loaded = model.utils.load_raw_parquet(
-                    filters=analyse_params,
-                    base_folder=base_folder,
+                    filters=filters,
+                    grid = analyse_params["grid"],
                     return_run_folders=True,
                 )
                 self.users_list = [entry["data"] for entry in loaded]
@@ -220,7 +252,10 @@ class Simulation:
             # simulate_and_analyse: users in memory, raw folder still known
             raw_folders_to_lock.add(raw_run_folder)
 
-        analysis_folder = self._make_run_folder("analysis_data", analyse_params, base_folder)
+        if analyse_params["grid"] == True:
+            analysis_folder = self._make_run_folder("analysis_data", analyse_params, grid_params)
+        else:
+            analysis_folder = self._make_run_folder("analysis_data", analyse_params)
         total     = len(self.users_list)
         milestone = max(1, total // 10)
 
@@ -269,7 +304,7 @@ class Simulation:
     # PHASE 3: PLOT
     # ==========================================================================
 
-    def load_analysis_data(self, plot_params, base_folder=None):
+    def load_analysis_data(self, plot_params):
         """
         Load pre-computed analysis data from analysis_data/ into memory.
 
@@ -278,12 +313,10 @@ class Simulation:
         plot_params : dict
             Must contain: "ro", "gamma", "a_param", "b_param", "time".
             Optional: "user_number" (positive = first N, negative = last N, absent = all).
-        base_folder : str, optional
-            Override for the analysis_data root directory.
         """
         logger.info("Loading analysis data...")
 
-        loaded = model.utils.load_analysis_parquet(filters=plot_params, base_folder=base_folder)
+        loaded = model.utils.load_analysis_parquet(filters=plot_params)
         logger.info(f"Loaded {len(loaded)} users from analysis_data")
 
         # gamma needed by freq_distribution plot
@@ -374,14 +407,22 @@ class Simulation:
     # UTILITY
     # ==========================================================================
 
-    def _make_run_folder(self, data_type, params, base_folder=None):
+    def _make_run_folder(self, data_type, params, grid_params=None):
         """
         Create and return a timestamped run folder under a data_type root.
 
         Folder hierarchy:
-            <base_folder>/
+            <project_root>/<data_type>/
                 ro_{ro}_gamma_{gamma}_a_{a_param}_b_{b_param}_time_{time}/
                     {YYYYMMDD_HHMMSS_ffffff}/
+
+        When grid_params is provided, the parameter folder is extended with
+        grid dimensions:
+                ro_{ro}_..._time_{time}_clen_{cell_lenght}_cnum_{cell_number}/
+
+        The single-token keys ``clen`` and ``cnum`` are used so that the
+        folder-name parser in the data loaders can split on ``_`` and pair
+        tokens unambiguously.
 
         Parameters
         ----------
@@ -389,23 +430,31 @@ class Simulation:
             e.g. "raw_data" or "analysis_data".
         params : dict
             Must contain "ro", "gamma", "a_param", "b_param", "time".
-        base_folder : str, optional
-            Defaults to project_root/<data_type>.
+        grid_params : dict, optional
+            When provided, must contain "cell_lenght" and "cell_number".
 
         Returns
         -------
         str
             Path to the newly created timestamped run folder.
         """
-        if base_folder is None:
-            project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            base_folder  = os.path.join(project_root, data_type)
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        base_folder  = os.path.join(project_root, data_type)
 
-        param_folder = os.path.join(
-            base_folder,
-            f"ro_{params['ro']}_gamma_{params['gamma']}"
-            f"_a_{params['a_param']}_b_{params['b_param']}_time_{params['time']}"
+        if grid_params is None:
+            param_folder = os.path.join(
+                base_folder,
+                f"ro_{params['ro']}_gamma_{params['gamma']}"
+                f"_a_{params['a_param']}_b_{params['b_param']}_time_{params['time']}"
         )
+            
+        else:
+            param_folder = os.path.join(
+                base_folder,
+                f"ro_{params['ro']}_gamma_{params['gamma']}"
+                f"_a_{params['a_param']}_b_{params['b_param']}_time_{params['time']}"
+                f"_clen_{grid_params['cell_lenght']}_cnum_{grid_params['cell_number']}"
+        )    
         run_folder = os.path.join(param_folder, datetime.now().strftime("%Y%m%d_%H%M%S_%f"))
         os.makedirs(run_folder, exist_ok=True)
         return run_folder

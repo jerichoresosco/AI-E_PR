@@ -3,6 +3,7 @@ import pandas as pd
 import model.utils 
 import logging
 from pprint import pprint
+import model.grid
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +93,7 @@ class User:
         storing results in the stats table.
     """
     
-    def __init__(self, uid, a_param, b_param, simulation):
+    def __init__(self, uid, a_param, b_param, simulation, grid=False):
         """
         Initializes a new User instance, sets default attributes, internal indices,
         initial position, and immediately performs the first mandatory exploration step.
@@ -151,6 +152,10 @@ class User:
 
         self._venue_index = {"Venue_1": 1}
         self._row_index = None
+
+        self.has_grid = (grid is not False)
+        if self.has_grid:
+            self.grid = model.grid.Grid(cell_lenght=simulation.grid_cell_lenght, cell_number=simulation.grid_cell_number)
 
         self.first_exploration()
 
@@ -263,12 +268,29 @@ class User:
     
     def get_exploration_venue(self):
         """
-        This method will contain the logic of exploration :)
+        Generates a new exploration destination using spatial power-law sampling.
 
+        If a grid is active (has_grid=True), samples candidate positions until one
+        falls in an unvisited cell, then marks that cell as visited.
+        If no grid is active, a single sample is drawn unconditionally.
+
+        Returns
+        -------
+        tuple of float
+            (x, y) Cartesian coordinates of the chosen exploration destination.
         """
-        self.delta_r = model.utils.spatial_power_law_sampling(par=self.a_param).item()
-        self.angle = np.random.uniform(0, 2 * np.pi)
-        next_position = model.utils.polar_to_cartesian(self.delta_r, self.angle)
+        if self.has_grid:
+            while True:
+                self.delta_r = model.utils.spatial_power_law_sampling(par=self.a_param).item()
+                self.angle = np.random.uniform(0, 2 * np.pi)
+                next_position = model.utils.polar_to_cartesian(self.delta_r, self.angle)
+                if self.grid.get_cell_value_given_position(next_position) == 0:
+                    break
+            self.grid.update_cell_value_given_position(next_position)
+        else:
+            self.delta_r = model.utils.spatial_power_law_sampling(par=self.a_param).item()
+            self.angle = np.random.uniform(0, 2 * np.pi)
+            next_position = model.utils.polar_to_cartesian(self.delta_r, self.angle)
         return next_position
     
     def first_exploration(self):
@@ -300,38 +322,5 @@ class User:
             self.user_history.append([self.state, self.departure, *self.previous_position,
                                     self.destination, *self.position, self.delta_r, self.angle, self.delta_t, self.clock])
     
-    def calculate_statistics(self):
-        """"
-        Computes trajectory-based metrics, including:
-        - center of mass (full trajectory)
-        - center of mass using top-2 most visited venues
-        - radius of gyration (full)
-        - radius of gyration using top-2 venues
-        """
-
-        x_traj, y_traj = model.utils.get_trajectory_arrays(self, k_top=None)
-        x_traj_two, y_traj_two = model.utils.get_trajectory_arrays(self, k_top=2)
-
-        x_cm = np.mean(x_traj)
-        y_cm = np.mean(y_traj)
-
-        x_cm_two = np.mean(x_traj_two)
-        y_cm_two = np.mean(y_traj_two)
-
-        self.r_cm = np.array([x_cm, y_cm])
-        self.r_cm_two = np.array([x_cm_two, y_cm_two])
-
-        self.r_gyr = np.sqrt(np.mean((x_traj - x_cm)**2 + (y_traj - y_cm)**2))
-        self.r_gyr_two = np.sqrt(np.mean((x_traj_two - x_cm_two)**2 + (y_traj_two - y_cm_two)**2))
-
-        self.stats = [
-                    ["metric", "value"],
-                    ["x_center of mass", x_cm],
-                    ["x_center of mass two", x_cm_two],
-                    ["y_center of mass", y_cm],
-                    ["y_center of mass two", y_cm_two],
-                    ["radius of gyration", self.r_gyr],
-                    ["radius of gyration two", self.r_gyr_two]
-        ]
                 
     

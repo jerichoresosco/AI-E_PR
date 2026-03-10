@@ -18,7 +18,7 @@ def main():
     # Choose mode
     # ==========================================================
 
-    mode = "plot"    # Options:
+    mode = "simulate_and_analyse"    # Options:
                         #   "simulate"             - run simulation, save raw_data only
                         #   "analyse"              - load raw_data, compute & save analysis_data
                         #   "simulate_and_analyse" - simulate then analyse without reloading from disk
@@ -33,8 +33,14 @@ def main():
         "gamma": 0.2,
         "a_param": 0.75,
         "b_param": 0.6,
-        "user_number": 100,
+        "user_number": 5,
         "time": 1000,
+        "grid" : True
+    }
+
+    grid_params = {
+        "cell_lenght": 100,
+        "cell_number": 10
     }
 
     # ----------------------------------------------------------
@@ -49,6 +55,7 @@ def main():
         "a_param": 0.75,
         "b_param": 0.6,
         "time": 1000,
+        "grid" : True
     }
 
     # ----------------------------------------------------------
@@ -83,7 +90,7 @@ def main():
     if mode == "simulate":
 
         simulation = model.simulation.Simulation()
-        simulation.run(simulate_params)
+        simulation.run(simulate_params, grid_params=grid_params)
         simulation.save_raw_data()
 
     # ==========================================================
@@ -92,7 +99,7 @@ def main():
     elif mode == "analyse":
 
         simulation = model.simulation.Simulation()
-        simulation.run_analysis(analyse_params)
+        simulation.run_analysis(analyse_params, grid_params=grid_params)
 
     # ==========================================================
     # MODE 3: SIMULATE + ANALYSE (no double disk load)
@@ -100,9 +107,9 @@ def main():
     elif mode == "simulate_and_analyse":
 
         simulation = model.simulation.Simulation()
-        simulation.run(simulate_params)
+        simulation.run(simulate_params, grid_params=grid_params)
         raw_run_folder = simulation.save_raw_data()
-        simulation.run_analysis(simulate_params, raw_run_folder=raw_run_folder)
+        simulation.run_analysis(simulate_params, raw_run_folder=raw_run_folder, grid_params=grid_params)
 
     # ==========================================================
     # MODE 4: PLOT only
