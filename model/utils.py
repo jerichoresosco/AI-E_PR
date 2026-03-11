@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.colors import LogNorm
 import os
 import inspect
 import scipy.stats
@@ -639,6 +640,8 @@ def load_raw_parquet(filters=None, grid = False, return_run_folders=False):
     }
 
     grid = filters.get("grid", grid)
+    if grid:
+        file_map["grid"] = "_grid.parquet"
 
     loaded = load_parquet_folder(base_folder, filters_clean, file_map, grid=grid,
                                  return_run_folders=return_run_folders)
@@ -1087,3 +1090,177 @@ def plot_r_gyr_over_time_from_df(rg_over_time_list, filters=None, title=None, bi
         plt.title(title, fontsize=10)
 
     filepath_save_plot(folder="plots", filters=filters)
+    
+
+def compute_and_save_aggregate_grid(analysis_folder):
+    """
+    Compute and save aggregate grid matrices at batch and parameter level.
+
+    Batch level  : sums all user_i_grid.parquet inside analysis_folder and
+                   saves the result as aggregate_grid.parquet in that same
+                   folder.
+    Param level  : re-scans every batch subfolder of the parent param folder,
+                   sums their aggregate_grid.parquet files, and saves the
+                   result as aggregate_grid.parquet directly in the param
+                   folder (overwriting any previous version).
+
+    Must be called after all per-user grid parquets have been written inside
+    analysis_folder.
+
+    Parameters
+    ----------
+    analysis_folder : str
+        Path to the timestamped batch run folder produced by run_analysis()
+        (e.g. analysis_data/ro_0.1_.../20260310_160442_960747/).
+    """
+    # --- batch-level aggregate ---
+    grid_sum = None
+    i = 0
+    while True:
+        fpath = os.path.join(analysis_folder, f"user_{i}_grid.parquet")
+        if not os.path.exists(fpath):
+            break
+        mat = pd.read_parquet(fpath).values.astype(int)
+        grid_sum = mat if grid_sum is None else grid_sum + mat
+        i += 1
+
+    if grid_sum is None:
+        logger.warning(f"No user grid files found in {analysis_folder}; skipping aggregate.")
+        return
+
+    batch_agg = pd.DataFrame(grid_sum)
+    batch_agg.columns = batch_agg.columns.astype(str)
+    batch_agg.to_parquet(os.path.join(analysis_folder, "aggregate_grid.parquet"), index=False)
+    logger.info(f"Batch-level aggregate grid saved to: {analysis_folder}")
+
+    # --- param-level aggregate (sum over all existing batch aggregates) ---
+    param_folder = os.path.dirname(analysis_folder)
+    param_sum = None
+    for entry in os.listdir(param_folder):
+        entry_path = os.path.join(param_folder, entry)
+        if not os.path.isdir(entry_path):
+            continue
+        agg_path = os.path.join(entry_path, "aggregate_grid.parquet")
+        if not os.path.exists(agg_path):
+            continue
+        mat = pd.read_parquet(agg_path).values.astype(int)
+        param_sum = mat if param_sum is None else param_sum + mat
+
+    if param_sum is not None:
+        param_agg = pd.DataFrame(param_sum)
+        param_agg.columns = param_agg.columns.astype(str)
+        param_agg.to_parquet(os.path.join(param_folder, "aggregate_grid.parquet"), index=False)
+        logger.info(f"Param-level aggregate grid saved to: {param_folder}")
+
+
+def load_all_aggregate_grids(filters):
+    """
+    Load param-level and all batch-level aggregate grids from analysis_data/.
+
+    Parameters
+    ----------
+    filters : dict
+        Simulation parameter filters to identify the param folder.
+        Standard keys: "ro", "gamma", "a_param", "b_param", "time".
+        Grid keys (when applicable): "cell_lenght", "cell_number".
+
+    Returns
+    -------
+    param_grid : np.ndarray or None
+        Param-level aggregate matrix (sum over all batches).
+        None if the file does not exist.
+    batch_grids : list of (str, np.ndarray)
+        One entry per batch subfolder that contains aggregate_grid.parquet,
+        as (batch_id, grid_matrix) pairs, sorted by batch_id.
+    """
+    project_root = os.path.dirname(os.path.dirname(
+        os.path.abspath(inspect.getfile(inspect.currentframe()))
+    ))
+    base_folder = os.path.join(project_root, "analysis_data")
+
+    param_folder_name = (
+        f"ro_{filters['ro']}_gamma_{filters['gamma']}"
+        f"_a_{filters['a_param']}_b_{filters['b_param']}_time_{filters['time']}"
+    )
+    if "cell_lenght" in filters and "cell_number" in filters:
+        param_folder_name += (
+            f"_clen_{filters['cell_lenght']}_cnum_{filters['cell_number']}"
+        )
+
+    param_folder = os.path.join(base_folder, param_folder_name)
+    if not os.path.exists(param_folder):
+        logger.warning(f"Param folder not found for aggregate grids: {param_folder}")
+        return None, []
+
+    # Param-level aggregate
+    param_agg_path = os.path.join(param_folder, "aggregate_grid.parquet")
+    param_grid = (
+        pd.read_parquet(param_agg_path).values.astype(int)
+        if os.path.exists(param_agg_path) else None
+    )
+
+    # Batch-level aggregates
+    batch_grids = []
+    for entry in sorted(os.listdir(param_folder)):
+        entry_path = os.path.join(param_folder, entry)
+        if not os.path.isdir(entry_path):
+            continue
+        agg_path = os.path.join(entry_path, "aggregate_grid.parquet")
+        if os.path.exists(agg_path):
+            mat = pd.read_parquet(agg_path).values.astype(int)
+            batch_grids.append((entry, mat))
+
+    logger.info(
+        f"Loaded aggregate grids: 1 param-level, {len(batch_grids)} batch-level"
+    )
+    return param_grid, batch_grids
+
+
+def plot_aggregate_grid(grid_matrix, filters=None, title=None, batch_id=None):
+    """ Plot a heatmap of an aggregate grid matrix.
+
+        Parameters
+        ----------
+        grid_matrix : np.ndarray
+            2D integer array with cumulative visit counts per cell.
+        filters : dict, optional
+            Used for the saved plot file name.
+        title : str, optional
+            Plot title.
+        batch_id : str, optional
+            When provided, included in the saved file name to distinguish individual batch plots from the param-level plot. 
+            
+    """
+
+    logger.info(f"Plotting aggregate grid heatmap{' for batch ' + batch_id if batch_id else ''}")
+
+    # Copy
+    m = grid_matrix.copy()
+    cx = m.shape[0] // 2
+    cy = m.shape[1] // 2
+    m_safe = np.where(m == 0, 1, m)
+    m_masked = np.ma.array(m_safe, mask=False)
+    m_masked.mask[cx, cy] = True
+    fig, ax = plt.subplots(figsize=(7, 6))
+    cmap = plt.cm.plasma.copy()
+    cmap.set_bad(color="white")
+
+    im = ax.imshow(
+        m_masked.T,
+        origin="lower",
+        aspect="equal",
+        cmap=cmap,
+        norm=LogNorm()
+    )
+
+    plt.colorbar(im, ax=ax, label="Total visits")
+    ax.set_xlabel("Cell X")
+    ax.set_ylabel("Cell Y")
+
+    if title:
+        ax.set_title(title, fontsize=8)
+
+    name = f"plot_aggregate_grid{'_' + batch_id if batch_id else ''}"
+
+    plt.show()
+    #filepath_save_plot("plots", name=name, filters=filters)

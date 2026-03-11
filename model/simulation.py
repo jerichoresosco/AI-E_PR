@@ -43,6 +43,10 @@ class Simulation:
         self.last_venue_history = None
         self.last_stats = None
 
+        # Aggregate grids -- populated during load_analysis_data()
+        self.aggregate_grid = None
+        self.batch_grids    = []
+
         # Set during run(), needed by User objects at decision time
         self.ro    = None
         self.gamma = None
@@ -286,9 +290,24 @@ class Simulation:
             s_over_time_df.to_parquet(
                 os.path.join(analysis_folder, f"user_{i}_s_over_time.parquet"),  index=False)
 
+            if analyse_params.get("grid", False):
+                if isinstance(user_entry, model.user.User) and user_entry.has_grid:
+                    grid_df = pd.DataFrame(user_entry.grid.matrix)
+                elif isinstance(user_entry, dict) and user_entry.get("grid") is not None:
+                    grid_df = user_entry["grid"]
+                else:
+                    grid_df = None
+                if grid_df is not None:
+                    grid_df.columns = grid_df.columns.astype(str)
+                    grid_df.to_parquet(
+                        os.path.join(analysis_folder, f"user_{i}_grid.parquet"), index=False)
+
             if (i + 1) % milestone == 0 or (i + 1) == total:
                 pct = ((i + 1) / total) * 100
                 logger.info(f"Analysis progress: {pct:.0f}% ({i+1}/{total} users)")
+
+        if analyse_params.get("grid", False):
+            model.utils.compute_and_save_aggregate_grid(analysis_folder)
 
         logger.info(f"Analysis data saved to: {analysis_folder}")
 
@@ -324,6 +343,7 @@ class Simulation:
 
         # Keep a copy of plot_params with the actual user count for titles/file names
         self._plot_params = {**plot_params, "user_number": len(loaded)}
+        self._plot_grid_params= {**plot_params}
 
         self.rg_list = []
         self.two_rg_list = []
@@ -357,6 +377,8 @@ class Simulation:
             if s_over_time_df is not None:
                 self.all_s_over_time.append(s_over_time_df)
 
+        self.aggregate_grid, self.batch_grids = model.utils.load_all_aggregate_grids(plot_params)
+
     def plot(self, plot_list):
         """
         Generate all plots listed in plot_list.
@@ -370,6 +392,7 @@ class Simulation:
             "two_radius", "s_over_time", "rg_over_time".
         """
         p = self._plot_params
+        pg = self._plot_grid_params
 
         if "mobility" in plot_list:
             model.utils.plot_mobility_visualization(
@@ -402,6 +425,24 @@ class Simulation:
                 self.all_rg_over_time, filters=p, bins_per_decade=10,
                 title=model.utils.build_plot_title("Radius of Gyration over time", p)
             )
+        if "aggregate_grid" in plot_list:
+            if self.aggregate_grid is not None:
+                model.utils.plot_aggregate_grid(
+                    self.aggregate_grid, filters=p,
+                    title=model.utils.build_plot_title("Aggregate Grid", pg)
+                )
+            else:
+                logger.warning("No param-level aggregate grid available to plot.")
+        if "batch_grid" in plot_list:
+            if self.batch_grids:
+                for batch_id, grid in self.batch_grids:
+                    model.utils.plot_aggregate_grid(
+                        grid, filters=p,
+                        title=model.utils.build_plot_title(f"Grid - {batch_id}", pg),
+                        batch_id=batch_id
+                    )
+            else:
+                logger.warning("No batch-level aggregate grids available to plot.")
 
     # ==========================================================================
     # UTILITY

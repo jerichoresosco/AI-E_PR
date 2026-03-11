@@ -194,6 +194,8 @@ class User:
         self.departure = self.user_history[-1][self.user_history[0].index("Destination")]
         self.clock = self.clock + self.delta_t
         self.update_histories()
+        if self.has_grid:
+            self.grid.update_cell_value_given_position(self.position)
 
     def exploring(self):
             """
@@ -286,7 +288,6 @@ class User:
                 next_position = model.utils.polar_to_cartesian(self.delta_r, self.angle)
                 if self.grid.get_cell_value_given_position(next_position) == 0:
                     break
-            self.grid.update_cell_value_given_position(next_position)
         else:
             self.delta_r = model.utils.spatial_power_law_sampling(par=self.a_param).item()
             self.angle = np.random.uniform(0, 2 * np.pi)

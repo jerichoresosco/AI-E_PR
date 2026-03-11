@@ -18,7 +18,7 @@ def main():
     # Choose mode
     # ==========================================================
 
-    mode = "simulate_and_analyse"    # Options:
+    mode = "plot"    # Options:
                         #   "simulate"             - run simulation, save raw_data only
                         #   "analyse"              - load raw_data, compute & save analysis_data
                         #   "simulate_and_analyse" - simulate then analyse without reloading from disk
@@ -33,14 +33,14 @@ def main():
         "gamma": 0.2,
         "a_param": 0.75,
         "b_param": 0.6,
-        "user_number": 5,
-        "time": 1000,
+        "user_number": 5000,
+        "time": 10000,
         "grid" : True
     }
 
     grid_params = {
-        "cell_lenght": 100,
-        "cell_number": 10
+        "cell_lenght": 101,
+        "cell_number": 101
     }
 
     # ----------------------------------------------------------
@@ -68,17 +68,21 @@ def main():
         "gamma": 0.2,
         "a_param": 0.75,
         "b_param": 0.6,
-        "time": 1000,
-        "user_number": 10,
+        "time": 10000,
+        "user_number": 5000,
+        "cell_lenght": 101,
+        "cell_number": 101,
     }
 
     plot_list = [
-        "mobility",
+        #"mobility",
         #"rg_distribution",
-        "freq_distribution",
+        #"freq_distribution",
         #"two_radius",
         #"s_over_time",
         #"rg_over_time",
+        #"aggregate_grid",   
+        "batch_grid",       
     ]
 
     start_time = time.time()
