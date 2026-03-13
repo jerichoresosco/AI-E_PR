@@ -93,7 +93,7 @@ class User:
         storing results in the stats table.
     """
     
-    def __init__(self, uid, a_param, b_param, simulation, grid=False):
+    def __init__(self, uid, a_param, b_param, simulation, grid=False, initial_position=None):
         """
         Initializes a new User instance, sets default attributes, internal indices,
         initial position, and immediately performs the first mandatory exploration step.
@@ -108,6 +108,12 @@ class User:
             Temporal power-law parameter.
         simulation : Simulation
             Reference to the parent simulation object providing model parameters.
+        grid : bool or Grid-like, optional
+            Whether to attach a Grid to this user (default False).
+        initial_position : tuple of float, optional
+            (x, y) Cartesian starting coordinates.  When None (default) the
+            origin (0, 0) is used.  When provided the user's first venue and
+            the grid cell counter are initialised at this position instead.
 
         Notes
         -----
@@ -121,15 +127,17 @@ class User:
         self.a_param = a_param
         self.b_param = b_param
 
+        # Resolve starting position: use provided value or default to origin
+        _start = initial_position if initial_position is not None else (0, 0)
 
         self.user_history = [["State(E/R)", "Departure","Departure_x_coord", "Departure_y_coord", "Destination","Destination_x_coord", "Destination_y_coord", "Distance", "Angle", "Delta_t", "Clock"]] 
-        self.venue_history = [["Venue_name", "Number of visits", "Venue_x_coord", "Venue_y_coord"], ["Venue_1", 1, 0, 0]]
+        self.venue_history = [["Venue_name", "Number of visits", "Venue_x_coord", "Venue_y_coord"], ["Venue_1", 1, _start[0], _start[1]]]
         self.num_distinct_venues = 1 ##lo sostituirò con num di elementi colonna history?
         self.simulation = simulation 
         self.state = None
  
         self.previous_position = None
-        self.position = (0,0)
+        self.position = _start
         self.next_position = None
 
         self.departure = "Venue_1"
@@ -155,7 +163,11 @@ class User:
 
         self.has_grid = (grid is not False)
         if self.has_grid:
-            self.grid = model.grid.Grid(cell_lenght=simulation.grid_cell_lenght, cell_number=simulation.grid_cell_number)
+            self.grid = model.grid.Grid(
+                cell_lenght=simulation.grid_cell_lenght,
+                cell_number=simulation.grid_cell_number,
+                initial_position=_start if initial_position is not None else None
+            )
 
         self.first_exploration()
 
@@ -285,13 +297,13 @@ class User:
             while True:
                 self.delta_r = model.utils.spatial_power_law_sampling(par=self.a_param).item()
                 self.angle = np.random.uniform(0, 2 * np.pi)
-                next_position = model.utils.polar_to_cartesian(self.delta_r, self.angle)
+                next_position = model.utils.polar_to_cartesian(self.delta_r, self.angle, position=self.position)
                 if self.grid.get_cell_value_given_position(next_position) == 0:
                     break
         else:
             self.delta_r = model.utils.spatial_power_law_sampling(par=self.a_param).item()
             self.angle = np.random.uniform(0, 2 * np.pi)
-            next_position = model.utils.polar_to_cartesian(self.delta_r, self.angle)
+            next_position = model.utils.polar_to_cartesian(self.delta_r, self.angle, position=self.position)
         return next_position
     
     def first_exploration(self):
@@ -322,6 +334,3 @@ class User:
             self.venue_history[self._row_index][self.venue_history[0].index("Number of visits")] += 1
             self.user_history.append([self.state, self.departure, *self.previous_position,
                                     self.destination, *self.position, self.delta_r, self.angle, self.delta_t, self.clock])
-    
-                
-    

@@ -76,32 +76,47 @@ class Simulation:
         b_param     = simulate_params["b_param"]
         user_number = simulate_params["user_number"]
         time        = simulate_params["time"]
-        grid_exists = simulate_params["grid"] 
+        grid_exists  = simulate_params["grid"]
+        random_start = simulate_params.get("random_start", False)
 
         # Store on self so User objects can access ro/gamma via self.simulation,
         # and save_raw_data() can build the correct folder name
-        self.ro              = ro
-        self.gamma           = gamma
-        self.a_param         = a_param
-        self.b_param         = b_param
+        self.ro               = ro
+        self.gamma            = gamma
+        self.a_param          = a_param
+        self.b_param          = b_param
         self._simulate_params = simulate_params
-        self.grid_exists     = grid_exists
+        self.grid_exists      = grid_exists
+        self._random_start    = random_start
 
         if grid_exists == True:
             self._grid_params = grid_params
             self.grid_cell_lenght = grid_params["cell_lenght"]
             self.grid_cell_number = grid_params["cell_number"]
+            if random_start:
+                self._spatial_center = (self.grid_cell_lenght * self.grid_cell_number) / 2
 
         milestone = max(1, user_number // 10)
         logger.info(f"Starting simulation for {user_number} users...")
 
         for i in range(user_number):
+            # Determine starting position
+            if grid_exists and random_start:
+                sc = self._spatial_center
+                init_pos = (
+                    np.random.uniform(-sc, sc),
+                    np.random.uniform(-sc, sc),
+                )
+            else:
+                init_pos = None
+
             user = model.user.User(
                 uid=f"User_{i}",
                 a_param=a_param,
                 b_param=b_param,
                 grid=grid_exists,
-                simulation=self
+                simulation=self,
+                initial_position=init_pos,
             )
             while user.clock < time:
                 user.make_decision()
@@ -376,6 +391,8 @@ class Simulation:
                 self.all_rg_over_time.append(rg_over_time_df)
             if s_over_time_df is not None:
                 self.all_s_over_time.append(s_over_time_df)
+    
+        #print(self.last_user_history)
 
         self.aggregate_grid, self.batch_grids = model.utils.load_all_aggregate_grids(plot_params)
 
@@ -461,9 +478,13 @@ class Simulation:
         grid dimensions:
                 ro_{ro}_..._time_{time}_clen_{cell_lenght}_cnum_{cell_number}/
 
-        The single-token keys ``clen`` and ``cnum`` are used so that the
-        folder-name parser in the data loaders can split on ``_`` and pair
-        tokens unambiguously.
+        The single-token keys ``clen``, ``cnum``, and ``rstart`` are used
+        so that the folder-name parser in the data loaders can split on
+        ``_`` and pair tokens unambiguously.
+
+        When a grid is active and ``random_start=True`` is present in
+        params, the suffix ``_rstart_yes`` is appended to distinguish
+        random-origin runs from fixed-origin ones.
 
         Parameters
         ----------
@@ -471,6 +492,8 @@ class Simulation:
             e.g. "raw_data" or "analysis_data".
         params : dict
             Must contain "ro", "gamma", "a_param", "b_param", "time".
+            Optional: "random_start" (bool) -- only relevant when
+            grid_params is also provided.
         grid_params : dict, optional
             When provided, must contain "cell_lenght" and "cell_number".
 
@@ -490,11 +513,13 @@ class Simulation:
         )
             
         else:
+            rstart_suffix = "_rstart_yes" if params.get("random_start", False) else ""
             param_folder = os.path.join(
                 base_folder,
                 f"ro_{params['ro']}_gamma_{params['gamma']}"
                 f"_a_{params['a_param']}_b_{params['b_param']}_time_{params['time']}"
                 f"_clen_{grid_params['cell_lenght']}_cnum_{grid_params['cell_number']}"
+                f"{rstart_suffix}"
         )    
         run_folder = os.path.join(param_folder, datetime.now().strftime("%Y%m%d_%H%M%S_%f"))
         os.makedirs(run_folder, exist_ok=True)

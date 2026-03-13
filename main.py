@@ -33,9 +33,11 @@ def main():
         "gamma": 0.2,
         "a_param": 0.75,
         "b_param": 0.6,
-        "user_number": 5000,
-        "time": 10000,
-        "grid" : True
+        "user_number": 500,
+        "time": 100000,
+        "grid" : True,
+        "random_start": False       # True = users start at a random position
+                                    # within the grid bounds (grid=True only)
     }
 
     grid_params = {
@@ -68,10 +70,11 @@ def main():
         "gamma": 0.2,
         "a_param": 0.75,
         "b_param": 0.6,
-        "time": 10000,
-        "user_number": 5000,
+        "time": 100000,
+        "user_number": 500,        #For correct displaying (for gridplots, has to be corrected)
         "cell_lenght": 101,
         "cell_number": 101,
+        "random_start": False,      # must match the simulate_params value used
     }
 
     plot_list = [

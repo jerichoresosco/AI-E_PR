@@ -168,12 +168,12 @@ def build_plot_title(base_title, filters):
     return f"{base_title} ({param_str})"
         
 
-def polar_to_cartesian (delta_r, angle):
+def polar_to_cartesian (delta_r, angle, position=(0,0)):
     """
     Convert polar coordinates to Cartesian coordinates.
 
     This function transforms a distance and angle in polar coordinates
-    to x and y coordinates in Cartesian space.
+    to x and y coordinates in Cartesian space starting from a initial position.
 
     Parameters
     ----------
@@ -181,6 +181,8 @@ def polar_to_cartesian (delta_r, angle):
         The radial distance from the origin.
     angle : float
         The angle in radians from the positive x-axis.
+    position : tuple of float, optional (default=(0,0))
+        The initial position in Cartesian coordinates.
 
     Returns
     -------
@@ -189,7 +191,7 @@ def polar_to_cartesian (delta_r, angle):
     """
     x = delta_r*np.cos(angle)
     y = delta_r*np.sin(angle)
-    return (x,y)
+    return (x + position[0], y + position[1])
 
 def get_trajectory_arrays(user, k_top=None):
     """
@@ -1186,6 +1188,8 @@ def load_all_aggregate_grids(filters):
         param_folder_name += (
             f"_clen_{filters['cell_lenght']}_cnum_{filters['cell_number']}"
         )
+        if filters.get("random_start", False):
+            param_folder_name += "_rstart_yes"
 
     param_folder = os.path.join(base_folder, param_folder_name)
     if not os.path.exists(param_folder):
@@ -1262,5 +1266,4 @@ def plot_aggregate_grid(grid_matrix, filters=None, title=None, batch_id=None):
 
     name = f"plot_aggregate_grid{'_' + batch_id if batch_id else ''}"
 
-    plt.show()
-    #filepath_save_plot("plots", name=name, filters=filters)
+    filepath_save_plot("plots", name=name, filters=filters)
