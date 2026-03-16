@@ -338,7 +338,7 @@ class Simulation:
     # PHASE 3: PLOT
     # ==========================================================================
 
-    def load_analysis_data(self, plot_params):
+    def load_analysis_data(self, plot_params, grid_params=None):
         """
         Load pre-computed analysis data from analysis_data/ into memory.
 
@@ -346,19 +346,29 @@ class Simulation:
         ----------
         plot_params : dict
             Must contain: "ro", "gamma", "a_param", "b_param", "time".
-            Optional: "user_number" (positive = first N, negative = last N, absent = all).
+            Optional: "user_number" (positive = first N, negative = last N, absent = all),
+            "grid" (bool), "random_start" (bool).
+        grid_params : dict, optional
+            When provided (and plot_params["grid"] is True), must contain
+            "cell_lenght" and "cell_number". Merged into the filter dict passed
+            to the loader so the correct analysis folder is located.
         """
         logger.info("Loading analysis data...")
 
-        loaded = model.utils.load_analysis_parquet(filters=plot_params)
+        filters = {**plot_params}
+        if plot_params.get("grid") and grid_params:
+            filters.update(grid_params)
+
+        loaded = model.utils.load_analysis_parquet(filters=filters)
         logger.info(f"Loaded {len(loaded)} users from analysis_data")
 
         # gamma needed by freq_distribution plot
         self.gamma = plot_params.get("gamma")
 
-        # Keep a copy of plot_params with the actual user count for titles/file names
-        self._plot_params = {**plot_params, "user_number": len(loaded)}
-        self._plot_grid_params= {**plot_params}
+        # Keep a copy of the full filters with the actual user count for titles/file names.
+        # _plot_grid_params excludes user_number (irrelevant for grid/aggregate plots).
+        self._plot_params = {**filters, "user_number": len(loaded)}
+        self._plot_grid_params = {k: v for k, v in filters.items() if k != "user_number"}
 
         self.rg_list = []
         self.two_rg_list = []
@@ -394,7 +404,7 @@ class Simulation:
     
         #print(self.last_user_history)
 
-        self.aggregate_grid, self.batch_grids = model.utils.load_all_aggregate_grids(plot_params)
+        self.aggregate_grid, self.batch_grids = model.utils.load_all_aggregate_grids(filters)
 
     def plot(self, plot_list):
         """
@@ -446,7 +456,8 @@ class Simulation:
             if self.aggregate_grid is not None:
                 model.utils.plot_aggregate_grid(
                     self.aggregate_grid, filters=p,
-                    title=model.utils.build_plot_title("Aggregate Grid", pg)
+                    title=model.utils.build_plot_title("Aggregate Grid", pg),
+                    mask_center= p["grid"]
                 )
             else:
                 logger.warning("No param-level aggregate grid available to plot.")
@@ -456,7 +467,8 @@ class Simulation:
                     model.utils.plot_aggregate_grid(
                         grid, filters=p,
                         title=model.utils.build_plot_title(f"Grid - {batch_id}", pg),
-                        batch_id=batch_id
+                        batch_id=batch_id,
+                        mask_center= p["grid"]
                     )
             else:
                 logger.warning("No batch-level aggregate grids available to plot.")

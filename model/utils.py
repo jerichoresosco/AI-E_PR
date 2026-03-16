@@ -439,7 +439,7 @@ def compute_s_over_time(user_history_df):
 # LOADERS
 # =============================================================================
 
-def load_parquet_folder(base_folder, filters, file_map, grid=False, return_run_folders=False):
+def load_parquet_folder(base_folder, filters, file_map, grid=False, return_run_folders=False, random_start=False):
     """
     Generic loader for per-user Parquet datasets stored under a parameter folder.
 
@@ -555,6 +555,12 @@ def load_parquet_folder(base_folder, filters, file_map, grid=False, return_run_f
         if grid != folder_has_grid:
             continue
 
+        # Scarta cartelle che non corrispondono alla modalità random_start richiesta
+        if grid:
+            folder_has_rstart = converted.get("rstart") == "yes"
+            if folder_has_rstart != bool(random_start):
+                continue
+
         if any(converted.get(key_map.get(fk, fk)) != fv
                for fk, fv in filters.items()):
             continue
@@ -626,7 +632,7 @@ def load_raw_parquet(filters=None, grid = False, return_run_folders=False):
 
     user_number = filters.get("user_number", None)
     filters_clean = {k: v for k, v in filters.items()
-                 if v is not None and k != "user_number" and k != "grid"}
+                 if v is not None and k not in ("user_number", "grid", "random_start")}
     project_root = os.path.dirname(os.path.dirname(
         os.path.abspath(inspect.getfile(inspect.currentframe()))
     ))
@@ -646,7 +652,8 @@ def load_raw_parquet(filters=None, grid = False, return_run_folders=False):
         file_map["grid"] = "_grid.parquet"
 
     loaded = load_parquet_folder(base_folder, filters_clean, file_map, grid=grid,
-                                 return_run_folders=return_run_folders)
+                                 return_run_folders=return_run_folders,
+                                 random_start=filters.get("random_start", False))
     loaded = _apply_user_number_slice(loaded, user_number)
 
     logger.info(f"Loaded {len(loaded)} users from raw_data")
@@ -675,9 +682,10 @@ def load_analysis_parquet(filters=None):
     if filters is None:
         filters = {}
 
-    user_number = filters.get("user_number", None)
+    user_number   = filters.get("user_number", None)
+    grid          = filters.get("grid", False)
     filters_clean = {k: v for k, v in filters.items()
-                     if v is not None and k != "user_number"}
+                     if v is not None and k not in ("user_number", "grid", "random_start")}
 
     project_root = os.path.dirname(os.path.dirname(
         os.path.abspath(inspect.getfile(inspect.currentframe()))
@@ -696,7 +704,8 @@ def load_analysis_parquet(filters=None):
         "user_history":  "_history.parquet",
     }
 
-    loaded = load_parquet_folder(base_folder, filters_clean, file_map)
+    loaded = load_parquet_folder(base_folder, filters_clean, file_map, grid=grid,
+                                 random_start=filters.get("random_start", False))
     loaded = _apply_user_number_slice(loaded, user_number)
 
     logger.info(f"Analysis data loaded: {len(loaded)} users")
@@ -782,7 +791,7 @@ def plot_mobility_visualization(user_history, venue_history, stats = None, filte
     ax.set_xlabel("X")
     ax.set_ylabel("Y")
     if title:
-        ax.set_title(title,fontsize=6)
+        ax.set_title(title,fontsize=7)
 
     filepath_save_plot("plots", filters=filters)
 
@@ -834,7 +843,7 @@ def plot_rg_distribution(rg_list, filters = None, title=None):
     plt.xlabel("Radius of gyration")
     plt.ylabel("Density")
     if title:
-        plt.title(title, fontsize=8)
+        plt.title(title, fontsize=7)
 
     plt.grid(True, linestyle="--", alpha=0.4)
     plt.tight_layout()
@@ -885,7 +894,7 @@ def plot_frequency_distribution(venue_history, gamma, filters = None, title = No
     plt.xlabel("Rank")
     plt.ylabel("Frequency")
     if title:
-        plt.title(title,fontsize=6)
+        plt.title(title,fontsize=7)
     #plt.title("Rank-frequency plot of Number of visits per venue")
     plt.grid(True, linestyle='--', alpha=0.3)
     plt.legend()
@@ -922,7 +931,7 @@ def plot_two_radius_vs_radius(rg_list, two_rg_list, filters = None, title = None
     plt.xlabel("Radius of Gyration")
     plt.ylabel("2-Radius of Gyration")
     if title:
-        plt.title(title,fontsize=6)
+        plt.title(title,fontsize=7)
     filepath_save_plot("plots", filters = filters)
 
 
@@ -991,7 +1000,7 @@ def plot_S_over_time(user_history_list, filters = None, title = None, bins_per_d
     plt.ylabel("S(t)")
     plt.grid(True, which="both", ls="--", alpha=0.5)
     if title:
-        plt.title(title, fontsize=10)
+        plt.title(title, fontsize=7)
     #plt.legend()
     
     filepath_save_plot(folder="plots", filters=filters)
@@ -1041,7 +1050,7 @@ def plot_S_over_time_from_df(s_over_time_list, filters=None, title=None, bins_pe
     plt.ylabel("S(t)")
     plt.grid(True, which="both", ls="--", alpha=0.5)
     if title:
-        plt.title(title, fontsize=10)
+        plt.title(title, fontsize=7)
 
     filepath_save_plot(folder="plots", filters=filters)
 
@@ -1089,7 +1098,7 @@ def plot_r_gyr_over_time_from_df(rg_over_time_list, filters=None, title=None, bi
     plt.ylabel("r_gyr(t)")
     plt.grid(True, which="both", ls="--", alpha=0.5)
     if title:
-        plt.title(title, fontsize=10)
+        plt.title(title, fontsize=7)
 
     filepath_save_plot(folder="plots", filters=filters)
     
@@ -1220,7 +1229,7 @@ def load_all_aggregate_grids(filters):
     return param_grid, batch_grids
 
 
-def plot_aggregate_grid(grid_matrix, filters=None, title=None, batch_id=None):
+def plot_aggregate_grid(grid_matrix, filters=None, title=None, batch_id=None, mask_center=True):
     """ Plot a heatmap of an aggregate grid matrix.
 
         Parameters
@@ -1232,7 +1241,9 @@ def plot_aggregate_grid(grid_matrix, filters=None, title=None, batch_id=None):
         title : str, optional
             Plot title.
         batch_id : str, optional
-            When provided, included in the saved file name to distinguish individual batch plots from the param-level plot. 
+            When provided, included in the saved file name to distinguish individual batch plots from the param-level plot.
+        mask_center : bool, optional
+            Whether to mask the center cell in the plot.
             
     """
 
@@ -1243,8 +1254,9 @@ def plot_aggregate_grid(grid_matrix, filters=None, title=None, batch_id=None):
     cx = m.shape[0] // 2
     cy = m.shape[1] // 2
     m_safe = np.where(m == 0, 1, m)
-    m_masked = np.ma.array(m_safe, mask=False)
-    m_masked.mask[cx, cy] = True
+    if mask_center:
+        m_masked = np.ma.array(m_safe, mask=False)
+        m_masked.mask[cx, cy] = True
     fig, ax = plt.subplots(figsize=(7, 6))
     cmap = plt.cm.plasma.copy()
     cmap.set_bad(color="white")
@@ -1262,7 +1274,7 @@ def plot_aggregate_grid(grid_matrix, filters=None, title=None, batch_id=None):
     ax.set_ylabel("Cell Y")
 
     if title:
-        ax.set_title(title, fontsize=8)
+        ax.set_title(title, fontsize=5)
 
     name = f"plot_aggregate_grid{'_' + batch_id if batch_id else ''}"
 

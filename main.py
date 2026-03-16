@@ -18,7 +18,7 @@ def main():
     # Choose mode
     # ==========================================================
 
-    mode = "plot"    # Options:
+    mode = "simulate_and_analyse"    # Options:
                         #   "simulate"             - run simulation, save raw_data only
                         #   "analyse"              - load raw_data, compute & save analysis_data
                         #   "simulate_and_analyse" - simulate then analyse without reloading from disk
@@ -36,7 +36,7 @@ def main():
         "user_number": 500,
         "time": 100000,
         "grid" : True,
-        "random_start": False       # True = users start at a random position
+        "random_start": True       # True = users start at a random position
                                     # within the grid bounds (grid=True only)
     }
 
@@ -71,9 +71,8 @@ def main():
         "a_param": 0.75,
         "b_param": 0.6,
         "time": 100000,
-        "user_number": 500,        #For correct displaying (for gridplots, has to be corrected)
-        "cell_lenght": 101,
-        "cell_number": 101,
+        "user_number": 500,        #For correct displaying
+        "grid": False,
         "random_start": False,      # must match the simulate_params value used
     }
 
@@ -84,8 +83,8 @@ def main():
         #"two_radius",
         #"s_over_time",
         #"rg_over_time",
-        #"aggregate_grid",   
-        "batch_grid",       
+        "aggregate_grid",   
+        #"batch_grid",       
     ]
 
     start_time = time.time()
@@ -124,7 +123,7 @@ def main():
     elif mode == "plot":
 
         simulation = model.simulation.Simulation()
-        simulation.load_analysis_data(plot_params)
+        simulation.load_analysis_data(plot_params, grid_params=grid_params)
         simulation.plot(plot_list)
 
     else:
