@@ -142,12 +142,25 @@ def filepath_save_plot(folder = "test_plots", name: str = None, filters: dict = 
     plt.savefig(filepath)
     plt.close()
 
+_PARAM_ABBREV = {
+    "ro":           "ρ",
+    "gamma":        "γ",
+    "a_param":      "a",
+    "b_param":      "b",
+    "time":         "t",
+    "user_number":  "u_n",
+    "cell_lenght":  "c_len",
+    "cell_number":  "c_num",
+    "grid":         "grid",
+    "random_start": "r_s",
+}
+
 def build_plot_title(base_title, filters):
     """
     Build a plot title by combining a base title with simulation parameters.
 
     This function constructs a descriptive title for plots by appending loading
-    parameters in a formatted string.
+    parameters in a formatted string, using abbreviated parameter names.
 
     Parameters
     ----------
@@ -164,7 +177,7 @@ def build_plot_title(base_title, filters):
     if not filters:
         return base_title
 
-    param_str = ", ".join(f"{k}={v}" for k, v in filters.items())
+    param_str = ", ".join(f"{_PARAM_ABBREV.get(k, k)}={v}" for k, v in filters.items())
     return f"{base_title} ({param_str})"
         
 
@@ -589,7 +602,9 @@ def load_parquet_folder(base_folder, filters, file_map, grid=False, return_run_f
 
     loaded = []
     for run_path, user_indices in matching_runs:
-        for idx in user_indices:
+        total_in_run = len(user_indices)
+        milestone    = max(1, total_in_run // 10)
+        for pos, idx in enumerate(user_indices):
             entry = {}
             for key, suffix in file_map.items():
                 fpath = os.path.join(run_path, f"user_{idx}{suffix}")
@@ -599,6 +614,12 @@ def load_parquet_folder(base_folder, filters, file_map, grid=False, return_run_f
                     loaded.append({"data": entry, "run_folder": run_path})
                 else:
                     loaded.append(entry)
+            if (pos + 1) % milestone == 0 or (pos + 1) == total_in_run:
+                pct = ((pos + 1) / total_in_run) * 100
+                logger.info(
+                    f"Loading progress: {pct:.0f}% ({pos+1}/{total_in_run} users) "
+                    f"[{os.path.basename(run_path)}]"
+                )
 
     return loaded
 
@@ -660,7 +681,7 @@ def load_raw_parquet(filters=None, grid = False, return_run_folders=False):
     return loaded
 
 
-def load_analysis_parquet(filters=None):
+def load_analysis_parquet(filters=None, needed_files=None):
     """
     Load analysis data from analysis_data/.
 
@@ -669,12 +690,14 @@ def load_analysis_parquet(filters=None):
     filters : dict, optional
         Parameter filters. Accepted keys: "ro", "gamma", "a_param", "b_param",
         "time", "user_number".
+    needed_files : set of str, optional
+        Subset of file-map keys to load (e.g. {"stats", "venue_history"}).
+        When None (default), all files are loaded.
 
     Returns
     -------
     list of dict
-        One dict per user with keys: "user_history", "venue_history",
-        "stats", "rg_over_time", "s_over_time".
+        One dict per user with keys from the effective file_map.
         Any value may be None if the corresponding file is absent.
     """
     logger.info("Loading analysis data (analysis_data)...")
@@ -696,13 +719,25 @@ def load_analysis_parquet(filters=None):
         logger.warning(f"analysis_data folder not found: {base_folder}")
         return []
 
-    file_map = {
+    full_file_map = {
         "stats":         "_stats.parquet",
         "rg_over_time":  "_rg_over_time.parquet",
         "s_over_time":   "_s_over_time.parquet",
         "venue_history": "_venue.parquet",
         "user_history":  "_history.parquet",
     }
+
+    if needed_files is not None:
+        file_map = {k: v for k, v in full_file_map.items() if k in needed_files}
+        if not file_map:
+            # Nothing per-user to load — caller will skip this function anyway,
+            # but return an empty list gracefully just in case.
+            return []
+    else:
+        file_map = full_file_map
+
+    if needed_files:
+        logger.info(f"Loading only: {sorted(needed_files)}")
 
     loaded = load_parquet_folder(base_folder, filters_clean, file_map, grid=grid,
                                  random_start=filters.get("random_start", False))
@@ -1180,9 +1215,11 @@ def load_all_aggregate_grids(filters):
     param_grid : np.ndarray or None
         Param-level aggregate matrix (sum over all batches).
         None if the file does not exist.
-    batch_grids : list of (str, np.ndarray)
+    param_user_count : int
+        Total number of users aggregated across all batches.
+    batch_grids : list of (str, np.ndarray, int)
         One entry per batch subfolder that contains aggregate_grid.parquet,
-        as (batch_id, grid_matrix) pairs, sorted by batch_id.
+        as (batch_id, grid_matrix, user_count) triples, sorted by batch_id.
     """
     project_root = os.path.dirname(os.path.dirname(
         os.path.abspath(inspect.getfile(inspect.currentframe()))
@@ -1203,7 +1240,7 @@ def load_all_aggregate_grids(filters):
     param_folder = os.path.join(base_folder, param_folder_name)
     if not os.path.exists(param_folder):
         logger.warning(f"Param folder not found for aggregate grids: {param_folder}")
-        return None, []
+        return None, 0, []
 
     # Param-level aggregate
     param_agg_path = os.path.join(param_folder, "aggregate_grid.parquet")
@@ -1212,8 +1249,9 @@ def load_all_aggregate_grids(filters):
         if os.path.exists(param_agg_path) else None
     )
 
-    # Batch-level aggregates
+    # Batch-level aggregates — count user_*_grid.parquet files for each batch
     batch_grids = []
+    param_user_count = 0
     for entry in sorted(os.listdir(param_folder)):
         entry_path = os.path.join(param_folder, entry)
         if not os.path.isdir(entry_path):
@@ -1221,12 +1259,18 @@ def load_all_aggregate_grids(filters):
         agg_path = os.path.join(entry_path, "aggregate_grid.parquet")
         if os.path.exists(agg_path):
             mat = pd.read_parquet(agg_path).values.astype(int)
-            batch_grids.append((entry, mat))
+            batch_user_count = sum(
+                1 for f in os.listdir(entry_path)
+                if f.startswith("user_") and f.endswith("_grid.parquet")
+            )
+            batch_grids.append((entry, mat, batch_user_count))
+            param_user_count += batch_user_count
 
     logger.info(
-        f"Loaded aggregate grids: 1 param-level, {len(batch_grids)} batch-level"
+        f"Loaded aggregate grids: 1 param-level ({param_user_count} users), "
+        f"{len(batch_grids)} batch-level"
     )
-    return param_grid, batch_grids
+    return param_grid, param_user_count, batch_grids
 
 
 def plot_aggregate_grid(grid_matrix, filters=None, title=None, batch_id=None, mask_center=True):
@@ -1257,6 +1301,8 @@ def plot_aggregate_grid(grid_matrix, filters=None, title=None, batch_id=None, ma
     if mask_center:
         m_masked = np.ma.array(m_safe, mask=False)
         m_masked.mask[cx, cy] = True
+    else:
+        m_masked = np.ma.array(m_safe, mask=False)
     fig, ax = plt.subplots(figsize=(7, 6))
     cmap = plt.cm.plasma.copy()
     cmap.set_bad(color="white")
@@ -1274,7 +1320,7 @@ def plot_aggregate_grid(grid_matrix, filters=None, title=None, batch_id=None, ma
     ax.set_ylabel("Cell Y")
 
     if title:
-        ax.set_title(title, fontsize=5)
+        ax.set_title(title, fontsize=6)
 
     name = f"plot_aggregate_grid{'_' + batch_id if batch_id else ''}"
 

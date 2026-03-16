@@ -18,7 +18,7 @@ def main():
     # Choose mode
     # ==========================================================
 
-    mode = "simulate_and_analyse"    # Options:
+    mode = "plot"    # Options:
                         #   "simulate"             - run simulation, save raw_data only
                         #   "analyse"              - load raw_data, compute & save analysis_data
                         #   "simulate_and_analyse" - simulate then analyse without reloading from disk
@@ -72,8 +72,8 @@ def main():
         "b_param": 0.6,
         "time": 100000,
         "user_number": 500,        #For correct displaying
-        "grid": False,
-        "random_start": False,      # must match the simulate_params value used
+        "grid": True,
+        "random_start": True,      # must match the simulate_params value used
     }
 
     plot_list = [
@@ -123,7 +123,7 @@ def main():
     elif mode == "plot":
 
         simulation = model.simulation.Simulation()
-        simulation.load_analysis_data(plot_params, grid_params=grid_params)
+        simulation.load_analysis_data(plot_params, grid_params=grid_params, plot_list=plot_list)
         simulation.plot(plot_list)
 
     else:

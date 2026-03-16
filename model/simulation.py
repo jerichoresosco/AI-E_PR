@@ -44,8 +44,9 @@ class Simulation:
         self.last_stats = None
 
         # Aggregate grids -- populated during load_analysis_data()
-        self.aggregate_grid = None
-        self.batch_grids    = []
+        self.aggregate_grid            = None
+        self.aggregate_grid_user_count = 0
+        self.batch_grids               = []
 
         # Set during run(), needed by User objects at decision time
         self.ro    = None
@@ -338,7 +339,7 @@ class Simulation:
     # PHASE 3: PLOT
     # ==========================================================================
 
-    def load_analysis_data(self, plot_params, grid_params=None):
+    def load_analysis_data(self, plot_params, grid_params=None, plot_list=None):
         """
         Load pre-computed analysis data from analysis_data/ into memory.
 
@@ -352,29 +353,73 @@ class Simulation:
             When provided (and plot_params["grid"] is True), must contain
             "cell_lenght" and "cell_number". Merged into the filter dict passed
             to the loader so the correct analysis folder is located.
+        plot_list : list of str, optional
+            The same plot_list that will be passed to plot(). When provided,
+            only the files required for those plots are loaded from disk,
+            and aggregate grids are loaded only when needed.
+            When None (default), all files are loaded (backward-compatible).
         """
+        # ------------------------------------------------------------------
+        # Determine which per-user files and which aggregate data are needed
+        # ------------------------------------------------------------------
+        _PLOT_FILE_NEEDS = {
+            "mobility":          {"user_history", "venue_history", "stats"},
+            "rg_distribution":   {"stats"},
+            "freq_distribution": {"venue_history"},
+            "two_radius":        {"stats"},
+            "s_over_time":       {"s_over_time"},
+            "rg_over_time":      {"rg_over_time"},
+            "aggregate_grid":    set(),   # only aggregate parquet, no per-user data
+            "batch_grid":        set(),
+        }
+
+        if plot_list is not None:
+            needed_files = set()
+            for p in plot_list:
+                needed_files |= _PLOT_FILE_NEEDS.get(p, set())
+            needs_user_data = bool(needed_files)
+            needs_grids     = any(p in ("aggregate_grid", "batch_grid") for p in plot_list)
+        else:
+            needed_files    = None   # load everything
+            needs_user_data = True
+            needs_grids     = True
+
         logger.info("Loading analysis data...")
+        if plot_list is not None:
+            logger.info(f"Plots requested: {plot_list}")
+            if needs_user_data:
+                logger.info(f"Per-user files needed: {sorted(needed_files)}")
+            else:
+                logger.info("No per-user files required — skipping per-user load")
+            if needs_grids:
+                logger.info("Aggregate grids will be loaded")
+            else:
+                logger.info("No grid plots requested — skipping aggregate grid load")
 
         filters = {**plot_params}
         if plot_params.get("grid") and grid_params:
             filters.update(grid_params)
 
-        loaded = model.utils.load_analysis_parquet(filters=filters)
-        logger.info(f"Loaded {len(loaded)} users from analysis_data")
-
         # gamma needed by freq_distribution plot
         self.gamma = plot_params.get("gamma")
-
-        # Keep a copy of the full filters with the actual user count for titles/file names.
-        # _plot_grid_params excludes user_number (irrelevant for grid/aggregate plots).
-        self._plot_params = {**filters, "user_number": len(loaded)}
-        self._plot_grid_params = {k: v for k, v in filters.items() if k != "user_number"}
 
         self.rg_list = []
         self.two_rg_list = []
         self.venue_history_list = []
         self.all_rg_over_time = []
         self.all_s_over_time = []
+
+        # ------------------------------------------------------------------
+        # Per-user data load (skipped when only grid plots are requested)
+        # ------------------------------------------------------------------
+        loaded = []
+        if needs_user_data:
+            loaded = model.utils.load_analysis_parquet(filters=filters, needed_files=needed_files)
+
+        # Keep a copy of the full filters with the actual user count for titles/file names.
+        # _plot_grid_params excludes user_number (irrelevant for grid/aggregate plots).
+        self._plot_params = {**filters, "user_number": len(loaded)}
+        self._plot_grid_params = {k: v for k, v in filters.items() if k != "user_number"}
 
         for entry in loaded:
             stats_df         = entry.get("stats")
@@ -404,7 +449,16 @@ class Simulation:
     
         #print(self.last_user_history)
 
-        self.aggregate_grid, self.batch_grids = model.utils.load_all_aggregate_grids(filters)
+        # ------------------------------------------------------------------
+        # Aggregate grid load (skipped when no grid plots are requested)
+        # ------------------------------------------------------------------
+        if needs_grids:
+            self.aggregate_grid, self.aggregate_grid_user_count, self.batch_grids = \
+                model.utils.load_all_aggregate_grids(filters)
+        else:
+            self.aggregate_grid            = None
+            self.aggregate_grid_user_count = 0
+            self.batch_grids               = []
 
     def plot(self, plot_list):
         """
@@ -454,21 +508,23 @@ class Simulation:
             )
         if "aggregate_grid" in plot_list:
             if self.aggregate_grid is not None:
+                pg_with_n = {**pg, "u_n": self.aggregate_grid_user_count}
                 model.utils.plot_aggregate_grid(
-                    self.aggregate_grid, filters=p,
-                    title=model.utils.build_plot_title("Aggregate Grid", pg),
-                    mask_center= p["grid"]
+                    self.aggregate_grid, filters=pg_with_n,
+                    title=model.utils.build_plot_title("Aggregate Grid", pg_with_n),
+                    mask_center= p["grid"] and not p.get("random_start", False)
                 )
             else:
                 logger.warning("No param-level aggregate grid available to plot.")
         if "batch_grid" in plot_list:
             if self.batch_grids:
-                for batch_id, grid in self.batch_grids:
+                for batch_id, grid, batch_user_count in self.batch_grids:
+                    pg_with_n = {**pg, "u_n": batch_user_count}
                     model.utils.plot_aggregate_grid(
-                        grid, filters=p,
-                        title=model.utils.build_plot_title(f"Grid - {batch_id}", pg),
+                        grid, filters=pg_with_n,
+                        title=model.utils.build_plot_title(f"Grid - {batch_id}", pg_with_n),
                         batch_id=batch_id,
-                        mask_center= p["grid"]
+                        mask_center= p["grid"] and not p.get("random_start", False)
                     )
             else:
                 logger.warning("No batch-level aggregate grids available to plot.")
