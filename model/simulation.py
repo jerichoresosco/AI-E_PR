@@ -122,6 +122,15 @@ class Simulation:
             while user.clock < time:
                 user.make_decision()
 
+            # Remove the last record if it pushed the clock past the time limit
+            header = user.user_history[0]
+            clock_idx = header.index("Clock")
+            state_idx = header.index("State(E/R)")
+            if len(user.user_history) > 1 and user.user_history[-1][clock_idx] > time:
+                last_row = user.user_history.pop()
+                if last_row[state_idx] == "E":
+                    user.venue_history.pop()
+
             self.users_list.append(user)
 
             if (i + 1) % milestone == 0 or (i + 1) == user_number:
@@ -488,7 +497,7 @@ class Simulation:
             )
         if "freq_distribution" in plot_list:
             model.utils.plot_frequency_distribution(
-                self.last_venue_history, self.gamma,
+                self.venue_history_list, self.gamma,
                 filters=p, title=model.utils.build_plot_title("Frequency Distribution", p)
             )
         if "two_radius" in plot_list:

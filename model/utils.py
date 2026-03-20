@@ -884,19 +884,23 @@ def plot_rg_distribution(rg_list, filters = None, title=None):
     plt.tight_layout()
     filepath_save_plot("plots", filters=filters)
 
-def plot_frequency_distribution(venue_history, gamma, filters = None, title = None):   
+def plot_frequency_distribution(venue_history_list, gamma, filters=None, title=None):
 
-    logger.info("Plotting frequency distribution")
+    logger.info("Plotting frequency distribution (averaged across users)")
     """
-    Plot the frequency distribution of venue visits on a log-log scale.
+    Plot the rank-frequency distribution of venue visits averaged across all users.
 
-    This function creates a rank-frequency plot of the number of visits per venue,
-    sorted in descending order. It also overlays a power-law fit line for comparison.
+    For each user the venues are ranked in descending order of visit count.
+    The visit counts at each rank are then averaged across all users that have
+    at least that many venues, producing a single mean curve.  A power-law fit
+    line is overlaid for comparison.
 
     Parameters
     ----------
-    venue_history : pandas.DataFrame
-        DataFrame containing venue visit data with a 'Number of visits' column.
+    venue_history_list : list of pandas.DataFrame or pandas.DataFrame
+        One DataFrame per user, each containing a 'Number of visits' column.
+        A bare DataFrame is accepted for backward compatibility (treated as a
+        single-user list).
     gamma : float
         Exponent for the power-law fit line (f(x) = x^(-1-gamma)).
     filters : dict, optional
@@ -908,29 +912,35 @@ def plot_frequency_distribution(venue_history, gamma, filters = None, title = No
     -------
     None
         The function generates and saves a plot but does not return any value.
-    """      
+    """
+    # Accept a single DataFrame for backward compatibility
+    if isinstance(venue_history_list, pd.DataFrame):
+        venue_history_list = [venue_history_list]
 
-    freq = venue_history['Number of visits'].sort_values(ascending=False).reset_index(drop=True)
-    x = freq.index.values + 1 #+1 in order to start from 1, so max value is first rank, not 0
-    y = freq.values
+    # Collect visit counts per rank across all users
+    rank_visits = {}   # rank (1-based) -> list of visit counts
+    for vh in venue_history_list:
+        sorted_visits = vh['Number of visits'].sort_values(ascending=False).values
+        for rank, visits in enumerate(sorted_visits, start=1):
+            rank_visits.setdefault(rank, []).append(visits)
 
-    plt.figure(figsize=(8,6))
+    ranks     = np.array(sorted(rank_visits.keys()))
+    avg_visits = np.array([np.mean(rank_visits[r]) for r in ranks])
 
-    plt.scatter(x, y, color='blue', label='data', s=50)
+    plt.figure(figsize=(8, 6))
+    plt.scatter(ranks, avg_visits, color='blue', label='avg data', s=50)
 
-    x_fit = np.linspace(min(x), max(x), 100)
-    y_fit = x_fit**(-1-gamma)
-    # scaling y so that function starts with the same maximum
-    y_fit = y_fit * max(y)/max(y_fit)  
+    x_fit = np.linspace(ranks.min(), ranks.max(), 100)
+    y_fit = x_fit ** (-1 - gamma)
+    y_fit = y_fit * avg_visits.max() / y_fit.max()   # scale to same maximum
     plt.plot(x_fit, y_fit, color='red', linestyle='--', label=r'$f(x) = x^{-1-\gamma}$')
 
     plt.xscale('log')
     plt.yscale('log')
     plt.xlabel("Rank")
-    plt.ylabel("Frequency")
+    plt.ylabel("Average frequency")
     if title:
-        plt.title(title,fontsize=7)
-    #plt.title("Rank-frequency plot of Number of visits per venue")
+        plt.title(title, fontsize=7)
     plt.grid(True, linestyle='--', alpha=0.3)
     plt.legend()
     filepath_save_plot("plots", filters=filters)
@@ -1092,8 +1102,13 @@ def plot_S_over_time_from_df(s_over_time_list, filters=None, title=None, bins_pe
 
 def plot_r_gyr_over_time_from_df(rg_over_time_list, filters=None, title=None, bins_per_decade=4):
     """
-    Plot r_gyr(t) — radius of gyration as a function of time — using
-    pre-computed rg_over_time DataFrames from analysis_data/.
+    Plot the radius of gyration over time as a percentage of each user's final
+    (maximum) rg value, averaged across all users.
+
+    For every log-spaced sample time T, each user contributes the rg value
+    recorded at the last event with clock ≤ T (last-before rule), divided by
+    their own maximum rg.  The per-user percentages are then averaged to obtain
+    the mean fractional progress toward the final rg.
 
     Parameters
     ----------
@@ -1104,33 +1119,60 @@ def plot_r_gyr_over_time_from_df(rg_over_time_list, filters=None, title=None, bi
     title : str, optional
         Plot title.
     bins_per_decade : int, optional
-        Log-axis binning density.
+        Number of log-spaced sample points per decade of time (default 4).
+        The maximum clock value is always included as the last sample point.
     """
-    logger.info("Plotting r_gyr over time (from analysis data)")
+    logger.info("Plotting r_gyr over time (normalised percentage, from analysis data)")
 
     if not rg_over_time_list:
         logger.warning("No rg-over-time data available to plot")
         return
 
-    clocks    = np.concatenate([df["clock"].values for df in rg_over_time_list])
-    rg_values = np.concatenate([df["rg"].values    for df in rg_over_time_list])
+    # Build log-spaced sample times spanning all users.
+    all_clocks = np.concatenate([df["clock"].values for df in rg_over_time_list])
+    min_c, max_c = all_clocks.min(), all_clocks.max()
+    log_min = np.log10(min_c)
+    log_max = np.log10(max_c)
+    num_samples = max(2, int(round((log_max - log_min) * bins_per_decade)))
+    sample_times = np.logspace(log_min, log_max, num_samples)
+    # Force exact max to avoid floating-point near-misses (10**log10(x) ≠ x)
+    sample_times[-1] = max_c
 
-    min_c, max_c = clocks.min(), clocks.max()
-    log_min  = np.log10(min_c) - 0.05
-    log_max  = np.log10(max_c) + 0.05
-    num_bins = int(np.ceil((log_max - log_min) * bins_per_decade))
-    bin_edges = np.logspace(log_min, log_max, num_bins)
+    # For each sample time collect the normalised rg from every user
+    pct_by_time = {t: [] for t in sample_times}
 
-    import scipy.stats
-    rg_mean, edges, _ = scipy.stats.binned_statistic(
-        clocks, rg_values, statistic='mean', bins=bin_edges)
-    centers = np.sqrt(edges[:-1] * edges[1:])
+    for df in rg_over_time_list:
+        clocks = df["clock"].values
+        rg     = df["rg"].values
+        #max_rg = rg.max() Creating troubles!!!!!!!!!! rg can decrease and max =\ from last value
+        max_rg = rg[-1]
+        if max_rg == 0:
+            continue
+        for t in sample_times:
+            # Last record whose clock is ≤ t  (last-before rule)
+            mask = clocks <= t
+            if not mask.any():
+                #0% for those who haven't started yet 
+                pct_by_time[t].append(0.0)
+            else:
+                idx = int(np.where(mask)[0][-1])
+                pct_by_time[t].append(rg[idx] / max_rg * 100.0)
+
+    # Average across users for each sample time
+    sample_t_plot = []
+    avg_pct_plot  = []
+    for t in sample_times:
+        vals = pct_by_time[t]
+        if vals:
+            sample_t_plot.append(t)
+            avg_pct_plot.append(np.mean(vals))
 
     plt.figure(figsize=(8, 5))
-    plt.scatter(centers, rg_mean, marker='o')
+    plt.scatter(sample_t_plot, avg_pct_plot, marker='o')
     plt.xscale("log")
     plt.xlabel("Clock")
-    plt.ylabel("r_gyr(t)")
+    plt.ylabel(r"$r_g(t)\,/\,r_g^{last}$ [%]")
+    plt.ylim(0, 105)
     plt.grid(True, which="both", ls="--", alpha=0.5)
     if title:
         plt.title(title, fontsize=7)
