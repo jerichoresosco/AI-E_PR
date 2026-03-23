@@ -33,11 +33,10 @@ def main():
         "gamma": 0.2,
         "a_param": 0.75,
         "b_param": 0.6,
-        "user_number": 1,
-        "time": 1000000,
-        "grid" : False,
-        "random_start": False       # True = users start at a random position
-                                    # within the grid bounds (grid=True only)
+        "user_number": 500,
+        "time": 10000,
+        "grid" : True,
+        "random_start": False       
     }
 
     grid_params = {
@@ -70,20 +69,20 @@ def main():
         "gamma": 0.2,
         "a_param": 0.75,
         "b_param": 0.6,
-        "time": 1000000,
+        "time": 10000,
         "user_number": 500,        #For correct displaying
-        "grid": False,
+        "grid": True,
         "random_start": False,      # must match the simulate_params value used
     }
 
     plot_list = [
         #"mobility",
         #"rg_distribution",
-        "freq_distribution",
+        #"freq_distribution",
         #"two_radius",
         #"s_over_time",
-        "rg_over_time",
-        #"aggregate_grid",   
+        #"rg_over_time",
+        "aggregate_grid",   
         #"batch_grid",       
     ]
 

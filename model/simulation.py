@@ -172,6 +172,7 @@ class Simulation:
         for i, user in enumerate(self.users_list):
             user_df  = pd.DataFrame(user.user_history[1:],  columns=user.user_history[0])
             venue_df = pd.DataFrame(user.venue_history[1:], columns=user.venue_history[0])
+            #print(venue_df)
 
             user_df.to_parquet( os.path.join(run_folder, f"user_{i}_history.parquet"), index=False)
             venue_df.to_parquet(os.path.join(run_folder, f"user_{i}_venue.parquet"),   index=False)

@@ -130,8 +130,18 @@ class User:
         # Resolve starting position: use provided value or default to origin
         _start = initial_position if initial_position is not None else (0, 0)
 
+        self.has_grid = (grid is not False)
+        if self.has_grid:
+            self.grid = model.grid.Grid(
+                cell_lenght=simulation.grid_cell_lenght,
+                cell_number=simulation.grid_cell_number,
+                initial_position=_start if initial_position is not None else None
+            )
+
+        _first_venue_name = self._position_to_cell_name(_start) if self.has_grid else "Venue_1"
+
         self.user_history = [["State(E/R)", "Departure","Departure_x_coord", "Departure_y_coord", "Destination","Destination_x_coord", "Destination_y_coord", "Distance", "Angle", "Delta_t", "Clock"]] 
-        self.venue_history = [["Venue_name", "Number of visits", "Venue_x_coord", "Venue_y_coord"], ["Venue_1", 1, _start[0], _start[1]]]
+        self.venue_history = [["Venue_name", "Number of visits", "Venue_x_coord", "Venue_y_coord"], [_first_venue_name, 1, _start[0], _start[1]]]
         self.num_distinct_venues = 1 ##lo sostituirò con num di elementi colonna history?
         self.simulation = simulation 
         self.state = None
@@ -140,7 +150,7 @@ class User:
         self.position = _start
         self.next_position = None
 
-        self.departure = "Venue_1"
+        self.departure = _first_venue_name
         self.destination = None
         self.previous_destination= None
 
@@ -158,19 +168,17 @@ class User:
 
 
 
-        self._venue_index = {"Venue_1": 1}
+        self._venue_index = {_first_venue_name: 1}
         self._row_index = None
-
-        self.has_grid = (grid is not False)
-        if self.has_grid:
-            self.grid = model.grid.Grid(
-                cell_lenght=simulation.grid_cell_lenght,
-                cell_number=simulation.grid_cell_number,
-                initial_position=_start if initial_position is not None else None
-            )
 
         self.first_exploration()
 
+
+    def _position_to_cell_name(self, position):
+        x, y = position
+        cell_x = int((x + self.grid.spatial_center) // self.grid.cell_lenght)
+        cell_y = int((y + self.grid.spatial_center) // self.grid.cell_lenght)
+        return f"Cell_({cell_x},{cell_y})"
 
     def make_decision(self):
         """
@@ -224,8 +232,8 @@ class User:
             self.state = "E"
             self.num_distinct_venues += 1
             self.next_position = self.get_exploration_venue()
-            self.destination = f"Venue_{self.num_distinct_venues}"
-            self._venue_index[f"Venue_{self.num_distinct_venues}"] = len(self.venue_history) 
+            self.destination = self._position_to_cell_name(self.next_position) if self.has_grid else f"Venue_{self.num_distinct_venues}"
+            self._venue_index[self.destination] = len(self.venue_history) 
 
     def returning(self):
             """
@@ -235,7 +243,7 @@ class User:
             """
             self.state = "R"
             self.next_position = self.get_return_position()
-            self.destination = f"Venue_{self.next_venue_return}"
+            self.destination = self.next_venue_return
             self.delta_r = None
             self.angle = None    
 
@@ -270,12 +278,12 @@ class User:
         choice = np.random.choice(len(venue_ids), p=prob)
 
         #Retriving the right number/position in the history matching with the choice in venue_ids
-        self.next_venue_return = [i for i, row in enumerate(self.venue_history) if row[0] == venue_ids[choice]][0]
+        self.next_venue_return = venue_ids[choice]
 
         col_x_index = self.venue_history[0].index("Venue_x_coord")
         col_y_index = self.venue_history[0].index("Venue_y_coord")
 
-        self._row_index = self._venue_index[f"Venue_{self.next_venue_return}"]
+        self._row_index = self._venue_index[self.next_venue_return]
 
         return self.venue_history[self._row_index][col_x_index], self.venue_history[self._row_index][col_y_index]
 
@@ -298,7 +306,8 @@ class User:
                 self.delta_r = model.utils.spatial_power_law_sampling(par=self.a_param).item()
                 self.angle = np.random.uniform(0, 2 * np.pi)
                 next_position = model.utils.polar_to_cartesian(self.delta_r, self.angle, position=self.position)
-                if self.grid.get_cell_value_given_position(next_position) == 0:
+                cell_value = self.grid.get_cell_value_given_position(next_position)
+                if cell_value is not False and cell_value == 0:
                     break
         else:
             self.delta_r = model.utils.spatial_power_law_sampling(par=self.a_param).item()
@@ -318,6 +327,8 @@ class User:
         self.position = self.next_position
         self.clock += self.delta_t
         self.update_histories()
+        if self.has_grid:
+            self.grid.update_cell_value_given_position(self.position)
 
     def update_histories(self):
         """
