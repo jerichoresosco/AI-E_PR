@@ -523,6 +523,7 @@ def load_parquet_folder(base_folder, filters, file_map, grid=False, return_run_f
             "time":         "time",
             "cell_lenght":  "clen",
             "cell_number":  "cnum",
+            "epr_fraction": "efrac",
         }
     elif grid == False:
         key_map = {
@@ -531,6 +532,7 @@ def load_parquet_folder(base_folder, filters, file_map, grid=False, return_run_f
             "a_param":      "a",
             "b_param":      "b",
             "time":         "time",
+            "epr_fraction": "efrac",
         }
 
     primary_suffix = next(iter(file_map.values()))
@@ -1278,6 +1280,8 @@ def load_all_aggregate_grids(filters):
         )
         if filters.get("random_start", False):
             param_folder_name += "_rstart_yes"
+    if filters.get("epr_fraction", 1.0) < 1.0:
+        param_folder_name += f"_efrac_{filters['epr_fraction']}"
 
     param_folder = os.path.join(base_folder, param_folder_name)
     if not os.path.exists(param_folder):

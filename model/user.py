@@ -46,9 +46,9 @@ class User:
     next_venue_return : int or None
         Index of the venue selected for a return movement.
     delta_r : float or None
-        Travel distance for exploration steps. None if returning.
+        Travel distance for exploration steps. None if returning or CF move.
     angle : float or None
-        Travel angle for exploration steps. None if returning.
+        Travel angle for exploration steps. None if returning or CF move.
     delta_t : float or None
         Waiting time at the current venue.
     clock : float
@@ -75,10 +75,19 @@ class User:
     make_decision()
         Determines whether the user explores or returns, updates movement,
         waiting time, clock, and histories.
+    make_decision_cf(neighbors)
+        CF variant of make_decision. Uses EPR probability to choose E/R, then
+        delegates to cf_exploring / cf_returning, falling back to EPR if needed.
     exploring()
         Executes an exploration step, selecting a new unvisited venue and updating state.
     returning()
         Executes a return step, selecting a previously visited venue based on visit frequency.
+    cf_exploring(neighbors)
+        CF exploration: picks a venue visited by a similar user but not yet by this user.
+        Tries neighbors in weighted-random order; returns False if all are exhausted.
+    cf_returning(neighbors)
+        CF return: picks a venue visited by both a similar user and this user.
+        Returns False (triggering EPR fallback) if no common venue exists.
     get_return_position()
         Selects a return venue using a frequency-weighted probability distribution and
         returns its coordinates.
@@ -217,6 +226,48 @@ class User:
         if self.has_grid:
             self.grid.update_cell_value_given_position(self.position)
 
+    def make_decision_cf(self, neighbors):
+        """
+        CF variant of make_decision. Uses the same EPR probability to decide
+        between exploration and return, then delegates to the CF movement methods.
+        Falls back to standard EPR movement when no CF-compatible venues are found.
+
+        Parameters
+        ----------
+        neighbors : list of (User, float)
+            Pre-computed list of (neighbor_user, similarity_weight) pairs,
+            sorted by descending similarity, produced by Simulation._build_cf_data().
+
+        Notes
+        -----
+        - E/R decision uses the same P_new as EPR.
+        - CF exploration: venue from similar user not yet visited by this user.
+          Fallback to EPR exploration if all neighbors are exhausted.
+        - CF return: venue visited by both a selected similar user and this user.
+          Fallback to EPR return if no common venue exists with the drawn neighbor.
+        - delta_r and angle are set to None for CF moves (no spatial sampling).
+        - delta_t is always sampled from the temporal power-law, same as EPR.
+        """
+        P_new = self.simulation.ro * self.num_distinct_venues ** (-self.simulation.gamma)
+
+        if np.random.random_sample(size=None) >= P_new:
+            if not self.cf_returning(neighbors):
+                self.returning()
+                logger.info(f"User {self.uid}: CF return fallback to EPR.")
+        else:
+            if not self.cf_exploring(neighbors):
+                self.exploring()
+                logger.warning(f"User {self.uid}: CF exploration fallback to EPR.")
+
+        self.delta_t = model.utils.temporal_power_law_sampling(par=self.b_param).item()
+        self.previous_position = self.position
+        self.position = self.next_position
+        self.departure = self.user_history[-1][self.user_history[0].index("Destination")]
+        self.clock = self.clock + self.delta_t
+        self.update_histories()
+        if self.has_grid:
+            self.grid.update_cell_value_given_position(self.position)
+
     def exploring(self):
             """
             Executes an exploration step. Selects a new unvisited venue by sampling
@@ -246,6 +297,132 @@ class User:
             self.destination = self.next_venue_return
             self.delta_r = None
             self.angle = None    
+
+    def cf_exploring(self, neighbors):
+        """
+        CF exploration step. Searches for a venue visited by a similar user that
+        this user has not yet visited, selected proportionally to the similar user's
+        visit frequency for that venue.
+
+        Neighbors are tried in a single weighted-random permutation (without
+        replacement), so each neighbor is attempted at most once per call.
+        Returns False when all neighbors have been tried without finding a valid
+        venue, triggering an EPR exploration fallback in make_decision_cf().
+
+        Parameters
+        ----------
+        neighbors : list of (User, float)
+            (neighbor_user, similarity_weight) pairs.
+
+        Returns
+        -------
+        bool
+            True if a CF venue was found and state was updated; False otherwise.
+
+        Notes
+        -----
+        On success sets: state="E", num_distinct_venues, next_position,
+        destination, _venue_index entry, delta_r=None, angle=None.
+        """
+        if not neighbors:
+            return False
+
+        my_venues = set(self._venue_index.keys())
+
+        neighbor_users = [u for u, _ in neighbors]
+        weights = np.array([w for _, w in neighbors], dtype=float)
+        if weights.sum() == 0:
+            logger.warning(f"User {self.uid}: CF exploration skipped due to zero similarity weights.")
+            return False
+        probs = weights / weights.sum()
+
+        # Weighted random permutation: try each neighbor at most once
+        order = np.random.choice(len(neighbor_users), size=len(neighbor_users),
+                                 replace=False, p=probs)
+
+        for idx in order:
+            neighbor = neighbor_users[idx]
+            # Venues visited by this neighbor but not yet by current user
+            candidate_rows = [row for row in neighbor.venue_history[1:]
+                              if row[0] not in my_venues]
+            if not candidate_rows:
+                continue
+
+            visit_counts = np.array([row[1] for row in candidate_rows], dtype=float)
+            p = visit_counts / visit_counts.sum()
+            chosen = candidate_rows[np.random.choice(len(candidate_rows), p=p)]
+
+            self.state = "E"
+            self.num_distinct_venues += 1
+            self.next_position = (chosen[2], chosen[3])
+            self.destination = chosen[0]
+            self._venue_index[self.destination] = len(self.venue_history)#?
+            self.delta_r = None
+            self.angle = None
+            return True
+
+        return False
+
+    def cf_returning(self, neighbors):
+        """
+        CF return step. Selects a venue visited by both a randomly drawn similar
+        user and this user (excluding the current position), chosen proportionally
+        to this user's own visit frequency for those venues.
+
+        Only one neighbor is sampled. If no common venue exists with that neighbor,
+        returns False immediately, triggering an EPR return fallback in
+        make_decision_cf().
+
+        Parameters
+        ----------
+        neighbors : list of (User, float)
+            (neighbor_user, similarity_weight) pairs.
+
+        Returns
+        -------
+        bool
+            True if a CF venue was found and state was updated; False otherwise.
+
+        Notes
+        -----
+        On success sets: state="R", next_position, next_venue_return,
+        _row_index, delta_r=None, angle=None.
+        """
+        if not neighbors:
+            logger.info(f"User {self.uid}: CF return skipped due to no neighbors.")
+            return False
+
+        neighbor_users = [u for u, _ in neighbors]
+        weights = np.array([w for _, w in neighbors], dtype=float)
+        if weights.sum() == 0:
+            logger.info(f"User {self.uid}: CF return skipped due to zero similarity weights.")
+            return False
+        probs = weights / weights.sum()
+
+        idx = np.random.choice(len(neighbor_users), p=probs)
+        neighbor = neighbor_users[idx]
+
+        neighbor_venue_names = {row[0] for row in neighbor.venue_history[1:]}
+
+        # Venues visited by both this user and the chosen neighbor, excluding current position
+        common_rows = [row for row in self.venue_history[1:]
+                       if row[0] in neighbor_venue_names
+                       and (row[2], row[3]) != self.position]
+
+        if not common_rows:
+            return False
+
+        visit_counts = np.array([row[1] for row in common_rows], dtype=float)
+        p = visit_counts / visit_counts.sum()
+        chosen = common_rows[np.random.choice(len(common_rows), p=p)]
+
+        self.state = "R"
+        self.next_position = (chosen[2], chosen[3])
+        self.next_venue_return = chosen[0]
+        self._row_index = self._venue_index[chosen[0]]
+        self.delta_r = None
+        self.angle = None
+        return True
 
     def get_return_position(self):
         """

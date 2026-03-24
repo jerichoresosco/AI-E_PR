@@ -19,6 +19,7 @@ class Simulation:
 
     Each phase is self-contained and receives only the parameters it needs:
         run(simulate_params, grid_params)   requires ro, gamma, a_param, b_param, user_number, time
+                                            optional: epr_fraction (default 1.0), top_k (default 10)
                                             grid_params optional: cell_lenght, cell_number
         run_analysis(analyse_params, grid_params)
                                             requires ro, gamma, a_param, b_param, time
@@ -64,21 +65,35 @@ class Simulation:
 
     def run(self, simulate_params, grid_params=None):
         """
-        Run the EPR simulation and store results in self.users_list.
+        Run the EPR (+ optional CF) simulation and store results in self.users_list.
 
         Parameters
         ----------
         simulate_params : dict
             Must contain: "ro", "gamma", "a_param", "b_param", "user_number", "time".
+            Optional:
+              "epr_fraction" (float, default 1.0) -- fraction of total time simulated
+                  with pure EPR before switching to collaborative filtering.
+                  Must be > 0. When 1.0 (default) the simulation is pure EPR.
+              "top_k" (int, default 10) -- number of most-similar neighbors considered
+                  per user during the CF phase.
         """
-        ro          = simulate_params["ro"]
-        gamma       = simulate_params["gamma"]
-        a_param     = simulate_params["a_param"]
-        b_param     = simulate_params["b_param"]
-        user_number = simulate_params["user_number"]
-        time        = simulate_params["time"]
+        ro           = simulate_params["ro"]
+        gamma        = simulate_params["gamma"]
+        a_param      = simulate_params["a_param"]
+        b_param      = simulate_params["b_param"]
+        user_number  = simulate_params["user_number"]
+        time         = simulate_params["time"]
         grid_exists  = simulate_params["grid"]
         random_start = simulate_params.get("random_start", False)
+        epr_fraction = simulate_params.get("epr_fraction", 1.0)
+        top_k        = simulate_params.get("top_k", 10)
+
+        if epr_fraction <= 0:
+            raise ValueError(
+                "epr_fraction must be > 0. At least some EPR data is required "
+                "before the CF phase can build user similarities."
+            )
 
         # Store on self so User objects can access ro/gamma via self.simulation,
         # and save_raw_data() can build the correct folder name
@@ -97,9 +112,16 @@ class Simulation:
             if random_start:
                 self._spatial_center = (self.grid_cell_lenght * self.grid_cell_number) / 2
 
+        epr_time  = epr_fraction * time
         milestone = max(1, user_number // 10)
-        logger.info(f"Starting simulation for {user_number} users...")
+        logger.info(
+            f"Starting EPR phase for {user_number} users "
+            f"(epr_fraction={epr_fraction}, epr_time={epr_time})..."
+        )
 
+        # ---------------------------------------------------------------
+        # Phase 1: EPR 
+        # ---------------------------------------------------------------
         for i in range(user_number):
             # Determine starting position
             if grid_exists and random_start:
@@ -119,11 +141,44 @@ class Simulation:
                 simulation=self,
                 initial_position=init_pos,
             )
-            while user.clock < time:
+            while user.clock < epr_time:
                 user.make_decision()
 
-            # Remove the last record if it pushed the clock past the time limit
-            header = user.user_history[0]
+            self.users_list.append(user)
+
+            if (i + 1) % milestone == 0 or (i + 1) == user_number:
+                pct = ((i + 1) / user_number) * 100
+                logger.info(f"EPR progress: {pct:.0f}% ({i+1}/{user_number} users)")
+
+        # ------------------------------------------------------------------
+        # Phase 2: CF -- build neighbor data, then run CF for remaining time
+        # ------------------------------------------------------------------
+        if epr_fraction < 1.0:
+            cf_updates   = 4 ##NEED MAIN IMPLEMENTATION!!!!
+            n_intervals  = cf_updates + 1
+            cf_duration  = time - epr_time
+            interval_len = cf_duration / n_intervals
+
+            for interval in range(n_intervals):
+                t_start = epr_time + interval * interval_len
+                t_end   = epr_time + (interval + 1) * interval_len
+
+                logger.info(
+                    f"CF interval {interval + 1}/{n_intervals}: "
+                    f"rebuilding similarities, running [{t_start:.1f}, {t_end:.1f}]..."
+                )
+                cf_neighbors_list = self._build_cf_data(top_k)
+
+                for i, user in enumerate(self.users_list):
+                    neighbors = cf_neighbors_list[i]
+                    while user.clock < t_end:
+                        user.make_decision_cf(neighbors)
+
+        # -----------------------------------------------------------------------
+        # Trim: remove the last record if it pushed the clock past the time limit
+        # -----------------------------------------------------------------------
+        for user in self.users_list:
+            header    = user.user_history[0]
             clock_idx = header.index("Clock")
             state_idx = header.index("State(E/R)")
             if len(user.user_history) > 1 and user.user_history[-1][clock_idx] > time:
@@ -131,11 +186,84 @@ class Simulation:
                 if last_row[state_idx] == "E":
                     user.venue_history.pop()
 
-            self.users_list.append(user)
+    def _build_cf_data(self, top_k):
+        """
+        Build cosine-similarity-based top-k neighbor lists for every user.
 
-            if (i + 1) % milestone == 0 or (i + 1) == user_number:
-                pct = ((i + 1) / user_number) * 100
-                logger.info(f"Simulation progress: {pct:.0f}% ({i+1}/{user_number} users)")
+        Constructs a user-venue visit-count matrix from the current state of
+        self.users_list, computes pairwise cosine similarities, and returns for
+        each user a ranked list of the most similar neighbors.
+
+        Parameters
+        ----------
+        top_k : int
+            Maximum number of neighbors to retain per user.
+            If fewer users have positive similarity, all of them are kept.
+
+        Returns
+        -------
+        list of list of (User, float)
+            cf_neighbors[i] = [(neighbor_User, similarity_weight), ...]
+            sorted by descending similarity for user i.
+            An empty list is returned for users with no positively similar neighbor.
+
+        Notes
+        -----
+        - Similarity is cosine similarity on raw visit counts.
+        - Self-similarity is zeroed out (a user is never its own neighbor).
+        - Only neighbors with strictly positive similarity are included.
+        """
+        n_users = len(self.users_list)
+
+        # Collect all unique venue names in insertion order
+        all_venues = []
+        venue_set  = set()
+        for user in self.users_list:
+            for row in user.venue_history[1:]:
+                if row[0] not in venue_set:
+                    venue_set.add(row[0])
+                    all_venues.append(row[0])
+        venue_to_idx = {v: i for i, v in enumerate(all_venues)}
+        n_venues = len(all_venues)
+
+        # Build user-venue visit count matrix
+        uv_matrix = np.zeros((n_users, n_venues), dtype=float)
+        for ui, user in enumerate(self.users_list):
+            for row in user.venue_history[1:]:
+                uv_matrix[ui, venue_to_idx[row[0]]] = row[1]
+
+        # Cosine similarity matrix
+        norms = np.linalg.norm(uv_matrix, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0
+        uv_norm    = uv_matrix / norms
+        sim_matrix = uv_norm @ uv_norm.T      # shape (n_users, n_users)
+        np.fill_diagonal(sim_matrix, 0.0)     # exclude self-similarity
+
+        # Top-k neighbors per user (positive similarity only)
+        top_k_actual = min(top_k, n_users - 1)
+        cf_neighbors = []
+        for ui in range(n_users):
+            sims     = sim_matrix[ui]
+            pos_mask = sims > 0
+            if not pos_mask.any():
+                cf_neighbors.append([])
+                continue
+            pos_indices = np.where(pos_mask)[0]
+            if len(pos_indices) > top_k_actual:
+                # Keep the top_k_actual most similar
+                pos_indices = pos_indices[np.argsort(sims[pos_indices])[::-1]][:top_k_actual]
+            else:
+                pos_indices = pos_indices[np.argsort(sims[pos_indices])[::-1]]
+            cf_neighbors.append(
+                [(self.users_list[j], float(sims[j])) for j in pos_indices]
+            )
+        #print(cf_neighbors)
+
+        logger.info(
+            f"CF neighbor data built: {n_users} users, {n_venues} unique venues, "
+            f"top_k={top_k_actual}"
+        )
+        return cf_neighbors
 
     def save_raw_data(self):
         """
@@ -358,7 +486,7 @@ class Simulation:
         plot_params : dict
             Must contain: "ro", "gamma", "a_param", "b_param", "time".
             Optional: "user_number" (positive = first N, negative = last N, absent = all),
-            "grid" (bool), "random_start" (bool).
+            "grid" (bool), "random_start" (bool), "epr_fraction" (float).
         grid_params : dict, optional
             When provided (and plot_params["grid"] is True), must contain
             "cell_lenght" and "cell_number". Merged into the filter dict passed
@@ -564,14 +692,17 @@ class Simulation:
         params, the suffix ``_rstart_yes`` is appended to distinguish
         random-origin runs from fixed-origin ones.
 
+        When ``epr_fraction`` is present in params and < 1.0, the suffix
+        ``_efrac_{epr_fraction}`` is appended to distinguish CF runs from
+        pure EPR runs.
+
         Parameters
         ----------
         data_type : str
             e.g. "raw_data" or "analysis_data".
         params : dict
             Must contain "ro", "gamma", "a_param", "b_param", "time".
-            Optional: "random_start" (bool) -- only relevant when
-            grid_params is also provided.
+            Optional: "random_start" (bool), "epr_fraction" (float).
         grid_params : dict, optional
             When provided, must contain "cell_lenght" and "cell_number".
 
@@ -583,11 +714,18 @@ class Simulation:
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         base_folder  = os.path.join(project_root, data_type)
 
+        efrac_suffix = (
+            f"_efrac_{params['epr_fraction']}"
+            if params.get("epr_fraction", 1.0) < 1.0
+            else ""
+        )
+
         if grid_params is None:
             param_folder = os.path.join(
                 base_folder,
                 f"ro_{params['ro']}_gamma_{params['gamma']}"
                 f"_a_{params['a_param']}_b_{params['b_param']}_time_{params['time']}"
+                f"{efrac_suffix}"
         )
             
         else:
@@ -598,6 +736,7 @@ class Simulation:
                 f"_a_{params['a_param']}_b_{params['b_param']}_time_{params['time']}"
                 f"_clen_{grid_params['cell_lenght']}_cnum_{grid_params['cell_number']}"
                 f"{rstart_suffix}"
+                f"{efrac_suffix}"
         )    
         run_folder = os.path.join(param_folder, datetime.now().strftime("%Y%m%d_%H%M%S_%f"))
         os.makedirs(run_folder, exist_ok=True)

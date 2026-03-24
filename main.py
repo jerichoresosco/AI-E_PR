@@ -34,13 +34,17 @@ def main():
         "a_param": 0.75,
         "b_param": 0.6,
         "user_number": 500,
-        "time": 10000,
+        "time": 100000,
         "grid" : True,
-        "random_start": False       
+        "random_start": True,
+        "epr_fraction": 0.3,        # fraction of 'time' run with pure EPR before CF (1.0 = pure EPR; 0 < x < 1 enables CF phase)
+        "top_k": 10,                # number of similar neighbors used in CF phase
     }
 
+    ##TOPK STILL NOT IN THE SAVING/PLOT PROCEDURE!!!!!1
+
     grid_params = {
-        "cell_lenght": 101,
+        "cell_lenght": 101, #must be odd to have a central cell
         "cell_number": 101
     }
 
@@ -55,7 +59,7 @@ def main():
         "gamma": 0.2,
         "a_param": 0.75,
         "b_param": 0.6,
-        "time": 1000,
+        "time": 100000,
         "grid" : True
     }
 
@@ -69,10 +73,11 @@ def main():
         "gamma": 0.2,
         "a_param": 0.75,
         "b_param": 0.6,
-        "time": 10000,
+        "time": 100000,
         "user_number": 500,        #For correct displaying
         "grid": True,
-        "random_start": False,      # must match the simulate_params value used
+        "random_start": True,      # must match the simulate_params value used
+        "epr_fraction": 0.3,      
     }
 
     plot_list = [
