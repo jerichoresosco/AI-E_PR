@@ -101,7 +101,7 @@ def temporal_power_law_sampling( par = 0.8, min_val = 1, max_val = 61200, n_samp
     return power_law_sampling(par = par, min_val = min_val, max_val = max_val, n_samples = n_samples)
 
 
-def filepath_save_plot(folder = "test_plots", name: str = None, filters: dict = None):
+def filepath_save_plot_or_show(folder = "test_plots", name: str = None, filters: dict = None, show = False):
     """
     Save function for plots (pdf format), which can be saved in different folders of the project.
     The name of the plot, if not passed, is automatically assigned as the name of the calling 
@@ -123,37 +123,28 @@ def filepath_save_plot(folder = "test_plots", name: str = None, filters: dict = 
         This function only produces plots for visual inspection and does not
         return any value.
     """
+    if show:
+        plt.show()
+    else:
 
-    # if name is not given, the calling function name is used instead
-    if name is None:
-        name = inspect.stack()[1].function
+        # if name is not given, the calling function name is used instead
+        if name is None:
+            name = inspect.stack()[1].function
 
-    # base folder 
-    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    
-    # folder where plots will be saved
-    plots_dir = os.path.join(base_dir, f"{folder}")
+        # base folder 
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        
+        # folder where plots will be saved
+        plots_dir = os.path.join(base_dir, f"{folder}")
+        os.makedirs(plots_dir, exist_ok=True)
 
-    filters = ", ".join(f"{k}={v}" for k, v in filters.items())
-    filename = f"{name}_{filters}.pdf"
-    filepath = os.path.join(plots_dir, filename)
+        filters = ", ".join(f"{k}={v}" for k, v in filters.items())
+        filename = f"{name}_{filters}.pdf"
+        filepath = os.path.join(plots_dir, filename)
 
-    plt.tight_layout()
-    plt.savefig(filepath)
-    plt.close()
-
-_PARAM_ABBREV = {
-    "ro":           "ρ",
-    "gamma":        "γ",
-    "a_param":      "a",
-    "b_param":      "b",
-    "time":         "t",
-    "user_number":  "u_n",
-    "cell_lenght":  "c_len",
-    "cell_number":  "c_num",
-    "grid":         "grid",
-    "random_start": "r_s",
-}
+        plt.tight_layout()
+        plt.savefig(filepath)
+        plt.close()
 
 def build_plot_title(base_title, filters):
     """
@@ -174,6 +165,18 @@ def build_plot_title(base_title, filters):
     str
         The constructed title string.
     """
+    _PARAM_ABBREV = {
+        "ro":           "ρ",
+        "gamma":        "γ",
+        "a_param":      "a",
+        "b_param":      "b",
+        "time":         "t",
+        "user_number":  "u_n",
+        "cell_lenght":  "c_len",
+        "cell_number":  "c_num",
+        "grid":         "grid",
+        "random_start": "r_s",
+    }
     if not filters:
         return base_title
 
@@ -310,7 +313,7 @@ def dotted_histogram(numpy_array, bins_per_decade=4):
     widths = np.diff(edges)
     density = counts / widths / len(array)
 
-    mask = density > 0
+    mask = density > 0 #Avoiding zero density bins 
     centers_filtered = centers[mask]
     density_filtered = density[mask]
 
@@ -655,7 +658,8 @@ def load_raw_parquet(filters=None, grid = False, return_run_folders=False):
 
     user_number = filters.get("user_number", None)
     filters_clean = {k: v for k, v in filters.items()
-                 if v is not None and k not in ("user_number", "grid", "random_start")}
+                 if v is not None and k not in ("user_number", "grid", "random_start")
+                 and not (k == "epr_fraction" and v == 1)}
     project_root = os.path.dirname(os.path.dirname(
         os.path.abspath(inspect.getfile(inspect.currentframe()))
     ))
@@ -710,7 +714,8 @@ def load_analysis_parquet(filters=None, needed_files=None):
     user_number   = filters.get("user_number", None)
     grid          = filters.get("grid", False)
     filters_clean = {k: v for k, v in filters.items()
-                     if v is not None and k not in ("user_number", "grid", "random_start")}
+                 if v is not None and k not in ("user_number", "grid", "random_start")
+                 and not (k == "epr_fraction" and v == 1)}
 
     project_root = os.path.dirname(os.path.dirname(
         os.path.abspath(inspect.getfile(inspect.currentframe()))
@@ -768,7 +773,7 @@ def _apply_user_number_slice(loaded, user_number):
 # PLOT FUNCTIONS
 # =============================================================================
 
-def plot_mobility_visualization(user_history, venue_history, stats = None, filters = None, title = None):
+def plot_mobility_visualization(user_history, venue_history, stats = None, filters = None, title = None, show = False):
     logger.info("Plotting mobility visualization")
     """
     Visualizes the user mobility trajectory and visited venues.
@@ -830,10 +835,10 @@ def plot_mobility_visualization(user_history, venue_history, stats = None, filte
     if title:
         ax.set_title(title,fontsize=7)
 
-    filepath_save_plot("plots", filters=filters)
+    filepath_save_plot_or_show("plots", filters=filters, show=show)
 
 
-def plot_rg_distribution(rg_list, filters = None, title=None):
+def plot_rg_distribution(rg_list, filters = None, title=None, show=False):
     logger.info("Plotting rg distribution")
     """
     Plot the distribution of radius of gyration values on a log-log scale.
@@ -884,9 +889,9 @@ def plot_rg_distribution(rg_list, filters = None, title=None):
 
     plt.grid(True, linestyle="--", alpha=0.4)
     plt.tight_layout()
-    filepath_save_plot("plots", filters=filters)
+    filepath_save_plot_or_show("plots", filters=filters, show=show)
 
-def plot_frequency_distribution(venue_history_list, gamma, filters=None, title=None):
+def plot_frequency_distribution(venue_history_list, gamma, filters=None, title=None, show=False):
 
     logger.info("Plotting frequency distribution (averaged across users)")
     """
@@ -925,6 +930,7 @@ def plot_frequency_distribution(venue_history_list, gamma, filters=None, title=N
         sorted_visits = vh['Number of visits'].sort_values(ascending=False).values
         for rank, visits in enumerate(sorted_visits, start=1):
             rank_visits.setdefault(rank, []).append(visits)
+            #created a dict where the key is the rank and the value is a list of visit counts for that rank across users
 
     ranks     = np.array(sorted(rank_visits.keys()))
     avg_visits = np.array([np.mean(rank_visits[r]) for r in ranks])
@@ -945,9 +951,9 @@ def plot_frequency_distribution(venue_history_list, gamma, filters=None, title=N
         plt.title(title, fontsize=7)
     plt.grid(True, linestyle='--', alpha=0.3)
     plt.legend()
-    filepath_save_plot("plots", filters=filters)
+    filepath_save_plot_or_show("plots", filters=filters, show=show)
 
-def plot_two_radius_vs_radius(rg_list, two_rg_list, filters = None, title = None):
+def plot_two_radius_vs_radius(rg_list, two_rg_list, filters = None, title = None, show = False):
 
     logger.info("Plotting 2-radius vs radius of gyration")
     """
@@ -979,95 +985,29 @@ def plot_two_radius_vs_radius(rg_list, two_rg_list, filters = None, title = None
     plt.ylabel("2-Radius of Gyration")
     if title:
         plt.title(title,fontsize=7)
-    filepath_save_plot("plots", filters = filters)
+    filepath_save_plot_or_show("plots", filters = filters, show=show)
 
-
-def plot_S_over_time(user_history_list, filters = None, title = None, bins_per_decade=4):
+def plot_S_over_time_from_df(s_over_time_list, filters=None, title=None, bins_per_decade=4, show=False):
     """
-    Plot the exploration statistic S(t) over time on a log-log scale.
+    Plot the radius of gyration over time as a percentage of each user's final
+    (maximum) rg value, averaged across all users.
 
-    This function computes and plots the cumulative number of unique venues visited
-    (S(t)) as a function of time (clock), using logarithmic binning for averaging.
+    For every log-spaced sample time T, each user contributes the rg value
+    recorded at the last event with clock ≤ T (last-before rule), divided by
+    their own maximum rg.  The per-user percentages are then averaged to obtain
+    the mean fractional progress toward the final rg.
 
     Parameters
     ----------
-    user_history_list : list of pandas.DataFrame
-        List of DataFrames containing user history with 'Clock' and 'State(E/R)' columns.
-    filters : dict, optional
-        Dictionary of filters to be included in the plot title.
-    title : str, optional (default=None)
-        Title for the plot. If None, no title is set.
-    bins_per_decade : int, optional (default=4)
-        Number of bins per decade for logarithmic binning.
-
-    Returns
-    -------
-    None
-        The function generates and saves a plot but does not return any value.
-    """
-    logger.info("Plotting S over time")
-    plt.figure(figsize=(8,5))
-    
-    clocks = np.array([])
-    s_values = np.array([])
-
-    for df in user_history_list:
-        e_rows = df[df['State(E/R)'] == 'E'].copy()
-        
-        clocks_temp = e_rows['Clock']
-        s_values_temp = range(2, 2 + len(clocks_temp))
-
-        clocks = np.append(clocks, clocks_temp)
-        s_values = np.append(s_values, s_values_temp)
-
-    min_clocks = clocks.min()
-    max_clocks = clocks.max()
-
-    log_min = np.log10(min_clocks)
-    log_max = np.log10(max_clocks)
-
-    #Avoiding boundary problems using a margin
-    margin = 0.05
-    log_min -= margin
-    log_max += margin
-
-    num_decades = log_max - log_min
-    num_bins = int(np.ceil(num_decades * bins_per_decade))
-   
-    bins_edges = np.logspace(np.log10(min_clocks), np.log10(max_clocks), num_bins)
-    y_mean, edges, _ = scipy.stats.binned_statistic(clocks, s_values, statistic='mean', bins=bins_edges)
-    centers = np.sqrt(edges[:-1] * edges[1:])      #geometric metric for log plot
-
-    plt.figure(figsize=(7,5))
-
-    plt.scatter(centers, y_mean, marker='o')
-    plt.xscale("log")
-    plt.yscale("log")
-    plt.xlabel("Clock")
-    plt.ylabel("S(t)")
-    plt.grid(True, which="both", ls="--", alpha=0.5)
-    if title:
-        plt.title(title, fontsize=7)
-    #plt.legend()
-    
-    filepath_save_plot(folder="plots", filters=filters)
-
-
-def plot_S_over_time_from_df(s_over_time_list, filters=None, title=None, bins_per_decade=4):
-    """
-    Plot S(t) — cumulative distinct venues visited — over time using
-    pre-computed s_over_time DataFrames from analysis_data/.
-
-    Parameters
-    ----------
-    s_over_time_list : list of pd.DataFrame
-        Each DataFrame has columns ['clock', 's'].
+    rg_over_time_list : list of pd.DataFrame
+        Each DataFrame has columns ['clock', 'rg'].
     filters : dict, optional
         Used for the plot file name.
     title : str, optional
         Plot title.
     bins_per_decade : int, optional
-        Log-axis binning density.
+        Number of log-spaced sample points per decade of time (default 4).
+        The maximum clock value is always included as the last sample point.
     """
     logger.info("Plotting S over time (from analysis data)")
 
@@ -1075,22 +1015,48 @@ def plot_S_over_time_from_df(s_over_time_list, filters=None, title=None, bins_pe
         logger.warning("No S-over-time data available to plot")
         return
 
-    clocks   = np.concatenate([df["clock"].values for df in s_over_time_list])
-    s_values = np.concatenate([df["s"].values     for df in s_over_time_list])
+    # Build log-spaced sample times spanning all users.
+    all_clocks = np.concatenate([df["clock"].values for df in s_over_time_list])
+    min_c, max_c = all_clocks.min(), all_clocks.max()
+    log_min = np.log10(min_c)
+    log_max = np.log10(max_c)
+    num_samples = max(2, int(round((log_max - log_min) * bins_per_decade)))
+    sample_times = np.logspace(log_min, log_max, num_samples)
+    # Force exact max to avoid floating-point near-misses (10**log10(x) ≠ x)
+    sample_times[-1] = max_c
 
-    min_c, max_c = clocks.min(), clocks.max()
-    log_min  = np.log10(min_c) - 0.05
-    log_max  = np.log10(max_c) + 0.05
-    num_bins = int(np.ceil((log_max - log_min) * bins_per_decade))
-    bin_edges = np.logspace(log_min, log_max, num_bins)
+    # For each sample time collect the normalised rg from every user
+    pct_by_time = {t: [] for t in sample_times}
 
-    import scipy.stats
-    y_mean, edges, _ = scipy.stats.binned_statistic(
-        clocks, s_values, statistic='mean', bins=bin_edges)
-    centers = np.sqrt(edges[:-1] * edges[1:])
+    for df in s_over_time_list:
+        clocks = df["clock"].values
+        s     = df["s"].values
+        #max_s = s.max() Creating troubles!!!!!!!!!! s can decrease and max =\ from last value
+        last_s = s[-1]
+        if last_s == 0:
+            logger.warning(f"Last s value is 0 for user in DataFrame")
+            continue
+        for t in sample_times:
+            # Last record whose clock is ≤ t  (last-before rule)
+            mask = clocks <= t
+            if not mask.any():
+                #0% for those who haven't started yet 
+                pct_by_time[t].append(0.0)
+            else:
+                idx = int(np.where(mask)[0][-1])
+                pct_by_time[t].append(s[idx])
+
+    # Average across users for each sample time
+    sample_t_plot = []
+    avg_pct_plot  = []
+    for t in sample_times:
+        vals = pct_by_time[t]
+        if vals:
+            sample_t_plot.append(t)
+            avg_pct_plot.append(np.mean(vals))
 
     plt.figure(figsize=(8, 5))
-    plt.scatter(centers, y_mean, marker='o')
+    plt.scatter(sample_t_plot, avg_pct_plot, marker='o')
     plt.xscale("log")
     plt.yscale("log")
     plt.xlabel("Clock")
@@ -1099,10 +1065,10 @@ def plot_S_over_time_from_df(s_over_time_list, filters=None, title=None, bins_pe
     if title:
         plt.title(title, fontsize=7)
 
-    filepath_save_plot(folder="plots", filters=filters)
+    filepath_save_plot_or_show(folder="plots", filters=filters, show=show)
 
 
-def plot_r_gyr_over_time_from_df(rg_over_time_list, filters=None, title=None, bins_per_decade=4):
+def plot_r_gyr_over_time_from_df(rg_over_time_list, filters=None, title=None, bins_per_decade=4, show=False):
     """
     Plot the radius of gyration over time as a percentage of each user's final
     (maximum) rg value, averaged across all users.
@@ -1147,8 +1113,9 @@ def plot_r_gyr_over_time_from_df(rg_over_time_list, filters=None, title=None, bi
         clocks = df["clock"].values
         rg     = df["rg"].values
         #max_rg = rg.max() Creating troubles!!!!!!!!!! rg can decrease and max =\ from last value
-        max_rg = rg[-1]
-        if max_rg == 0:
+        last_rg = rg[-1]
+        if last_rg == 0:
+            logger.warning(f"Last rg value is 0 for user in DataFrame")
             continue
         for t in sample_times:
             # Last record whose clock is ≤ t  (last-before rule)
@@ -1158,7 +1125,7 @@ def plot_r_gyr_over_time_from_df(rg_over_time_list, filters=None, title=None, bi
                 pct_by_time[t].append(0.0)
             else:
                 idx = int(np.where(mask)[0][-1])
-                pct_by_time[t].append(rg[idx] / max_rg * 100.0)
+                pct_by_time[t].append(rg[idx] / last_rg * 100.0)
 
     # Average across users for each sample time
     sample_t_plot = []
@@ -1172,14 +1139,15 @@ def plot_r_gyr_over_time_from_df(rg_over_time_list, filters=None, title=None, bi
     plt.figure(figsize=(8, 5))
     plt.scatter(sample_t_plot, avg_pct_plot, marker='o')
     plt.xscale("log")
+    #plt.yscale("log")
     plt.xlabel("Clock")
     plt.ylabel(r"$r_g(t)\,/\,r_g^{last}$ [%]")
-    plt.ylim(0, 105)
+    #plt.ylim(0, 105)
     plt.grid(True, which="both", ls="--", alpha=0.5)
     if title:
         plt.title(title, fontsize=7)
 
-    filepath_save_plot(folder="plots", filters=filters)
+    filepath_save_plot_or_show(folder="plots", filters=filters, show=show)
     
 
 def compute_and_save_aggregate_grid(analysis_folder):
@@ -1319,7 +1287,7 @@ def load_all_aggregate_grids(filters):
     return param_grid, param_user_count, batch_grids
 
 
-def plot_aggregate_grid(grid_matrix, filters=None, title=None, batch_id=None, mask_center=True):
+def plot_aggregate_grid(grid_matrix, filters=None, title=None, batch_id=None, mask_center=True, show=False):
     """ Plot a heatmap of an aggregate grid matrix.
 
         Parameters
@@ -1370,4 +1338,4 @@ def plot_aggregate_grid(grid_matrix, filters=None, title=None, batch_id=None, ma
 
     name = f"plot_aggregate_grid{'_' + batch_id if batch_id else ''}"
 
-    filepath_save_plot("plots", name=name, filters=filters)
+    filepath_save_plot_or_show("plots", name=name, filters=filters, show=show)

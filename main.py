@@ -29,15 +29,15 @@ def main():
     # "simulate_and_analyse" modes.
     # ----------------------------------------------------------
     simulate_params = {
-        "ro": 0.1,
+        "ro": 0.6,
         "gamma": 0.2,
-        "a_param": 0.75,
-        "b_param": 0.6,
+        "a_param": 0.55,
+        "b_param": 0.8,
         "user_number": 500,
         "time": 100000,
-        "grid" : True,
+        "grid" : False,
         "random_start": True,
-        "epr_fraction": 0.3,        # fraction of 'time' run with pure EPR before CF (1.0 = pure EPR; 0 < x < 1 enables CF phase)
+        "epr_fraction": 1,        # fraction of 'time' run with pure EPR before CF (1.0 = pure EPR; 0 < x < 1 enables CF phase)
         "top_k": 10,                # number of similar neighbors used in CF phase
     }
 
@@ -82,14 +82,16 @@ def main():
 
     plot_list = [
         #"mobility",
-        #"rg_distribution",
-        #"freq_distribution",
-        #"two_radius",
-        #"s_over_time",
+        "rg_distribution", #checked but still double plot
+        #"freq_distribution", 
+        #"two_radius", 
+        #"s_over_time", 
         #"rg_over_time",
-        "aggregate_grid",   
+        #"aggregate_grid",   
         #"batch_grid",       
     ]
+
+    show = True #if True only shows the plots, if False only saves them to disk
 
     start_time = time.time()
     logger.info(f"Running mode: {mode}")
@@ -128,7 +130,7 @@ def main():
 
         simulation = model.simulation.Simulation()
         simulation.load_analysis_data(plot_params, grid_params=grid_params, plot_list=plot_list)
-        simulation.plot(plot_list)
+        simulation.plot(plot_list, show=show)
 
     else:
         raise ValueError(

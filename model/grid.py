@@ -24,24 +24,28 @@ class Grid:
             center_idx = cell_number // 2
             self.matrix[center_idx, center_idx] = 1
         else:
-            x, y = initial_position
-            cell_x = int((x + self.spatial_center) // self.cell_lenght)
-            cell_y = int((y + self.spatial_center) // self.cell_lenght)
+            cell_x, cell_y = self._position_to_cell_coords(initial_position)
             if 0 <= cell_x < self.cell_number and 0 <= cell_y < self.cell_number:
                 self.matrix[cell_x, cell_y] = 1
 
-    def get_cell_value_given_position(self, position):
+    def _position_to_cell_coords(self, position):
         x, y = position
         cell_x = int((x + self.spatial_center) // self.cell_lenght)
         cell_y = int((y + self.spatial_center) // self.cell_lenght)
+        return cell_x, cell_y
+    
+    def position_to_cell_name(self, position):
+        cell_x, cell_y = self._position_to_cell_coords(position)
+        return f"Cell_({cell_x},{cell_y})"
+
+    def get_cell_value_given_position(self, position):
+        cell_x, cell_y = self._position_to_cell_coords(position)
         if 0 <= cell_x < self.cell_number and 0 <= cell_y < self.cell_number:
             return self.matrix[cell_x, cell_y]
         else:
             return False  # Out of bounds
         
     def update_cell_value_given_position(self, position):
-        x, y = position
-        cell_x = int((x + self.spatial_center) // self.cell_lenght)
-        cell_y = int((y + self.spatial_center) // self.cell_lenght)
+        cell_x, cell_y = self._position_to_cell_coords(position)
         if 0 <= cell_x < self.cell_number and 0 <= cell_y < self.cell_number:
             self.matrix[cell_x, cell_y] += 1

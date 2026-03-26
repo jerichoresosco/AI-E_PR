@@ -184,10 +184,8 @@ class User:
 
 
     def _position_to_cell_name(self, position):
-        x, y = position
-        cell_x = int((x + self.grid.spatial_center) // self.grid.cell_lenght)
-        cell_y = int((y + self.grid.spatial_center) // self.grid.cell_lenght)
-        return f"Cell_({cell_x},{cell_y})"
+        return self.grid.position_to_cell_name(position)
+    
 
     def make_decision(self):
         """
@@ -479,6 +477,7 @@ class User:
             (x, y) Cartesian coordinates of the chosen exploration destination.
         """
         if self.has_grid:
+            saturation = 0
             while True:
                 self.delta_r = model.utils.spatial_power_law_sampling(par=self.a_param).item()
                 self.angle = np.random.uniform(0, 2 * np.pi)
@@ -486,6 +485,9 @@ class User:
                 cell_value = self.grid.get_cell_value_given_position(next_position)
                 if cell_value is not False and cell_value == 0:
                     break
+                saturation += 1
+                if saturation > 100000:
+                    raise RuntimeError(f"User {self.uid}: Unable to find unvisited cell after 100000 attempts. Check grid parameters or user density.")
         else:
             self.delta_r = model.utils.spatial_power_law_sampling(par=self.a_param).item()
             self.angle = np.random.uniform(0, 2 * np.pi)

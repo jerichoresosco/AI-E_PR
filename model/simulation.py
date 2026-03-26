@@ -59,6 +59,8 @@ class Simulation:
         # Stored after load_analysis_data() for plot() titles/filters
         self._plot_params = None
 
+        #Selecting saveplot or showplot
+        self._show = None
     # ==========================================================================
     # PHASE 1: SIMULATE
     # ==========================================================================
@@ -584,8 +586,7 @@ class Simulation:
                 self.all_rg_over_time.append(rg_over_time_df)
             if s_over_time_df is not None:
                 self.all_s_over_time.append(s_over_time_df)
-    
-        #print(self.last_user_history)
+        #self.last_user_history.to_csv(r"C:\Users\Jacopo\Desktop\nome_file.csv", index=False)
 
         # ------------------------------------------------------------------
         # Aggregate grid load (skipped when no grid plots are requested)
@@ -598,7 +599,7 @@ class Simulation:
             self.aggregate_grid_user_count = 0
             self.batch_grids               = []
 
-    def plot(self, plot_list):
+    def plot(self, plot_list, show=False):
         """
         Generate all plots listed in plot_list.
 
@@ -610,6 +611,7 @@ class Simulation:
             Accepted values: "mobility", "rg_distribution", "freq_distribution",
             "two_radius", "s_over_time", "rg_over_time".
         """
+        self._show = show
         p = self._plot_params
         pg = self._plot_grid_params
 
@@ -617,32 +619,38 @@ class Simulation:
             model.utils.plot_mobility_visualization(
                 self.last_user_history, self.last_venue_history,
                 stats=self.last_stats,
-                filters=p, title=model.utils.build_plot_title("User Mobility", p)
+                filters=p, title=model.utils.build_plot_title("User Mobility", p),
+                show=self._show
             )
         if "rg_distribution" in plot_list:
             model.utils.plot_rg_distribution(
                 self.rg_list,
-                filters=p, title=model.utils.build_plot_title("RG Distribution", p)
+                filters=p, title=model.utils.build_plot_title("RG Distribution", p),
+                show=self._show
             )
         if "freq_distribution" in plot_list:
             model.utils.plot_frequency_distribution(
                 self.venue_history_list, self.gamma,
-                filters=p, title=model.utils.build_plot_title("Frequency Distribution", p)
+                filters=p, title=model.utils.build_plot_title("Frequency Distribution", p),
+                show=self._show
             )
         if "two_radius" in plot_list:
             model.utils.plot_two_radius_vs_radius(
                 self.rg_list, self.two_rg_list,
-                filters=p, title=model.utils.build_plot_title("Two-RG vs RG", p)
+                filters=p, title=model.utils.build_plot_title("Two-RG vs RG", p),
+                show=self._show
             )
         if "s_over_time" in plot_list:
-            model.utils.plot_S_over_time_from_df(
+            model.utils.plot_new_s_over_time_from_df(
                 self.all_s_over_time, filters=p, bins_per_decade=10,
-                title=model.utils.build_plot_title("S over time", p)
+                title=model.utils.build_plot_title("S over time", p),
+                show=self._show
             )
         if "rg_over_time" in plot_list:
             model.utils.plot_r_gyr_over_time_from_df(
                 self.all_rg_over_time, filters=p, bins_per_decade=10,
-                title=model.utils.build_plot_title("Radius of Gyration over time", p)
+                title=model.utils.build_plot_title("Radius of Gyration over time", p),
+                show=self._show
             )
         if "aggregate_grid" in plot_list:
             if self.aggregate_grid is not None:
@@ -650,7 +658,8 @@ class Simulation:
                 model.utils.plot_aggregate_grid(
                     self.aggregate_grid, filters=pg_with_n,
                     title=model.utils.build_plot_title("Aggregate Grid", pg_with_n),
-                    mask_center= p["grid"] and not p.get("random_start", False)
+                    mask_center= p["grid"] and not p.get("random_start", False),
+                    show=self._show
                 )
             else:
                 logger.warning("No param-level aggregate grid available to plot.")
@@ -662,7 +671,8 @@ class Simulation:
                         grid, filters=pg_with_n,
                         title=model.utils.build_plot_title(f"Grid - {batch_id}", pg_with_n),
                         batch_id=batch_id,
-                        mask_center= p["grid"] and not p.get("random_start", False)
+                        mask_center= p["grid"] and not p.get("random_start", False),
+                        show=self._show
                     )
             else:
                 logger.warning("No batch-level aggregate grids available to plot.")
