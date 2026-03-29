@@ -251,11 +251,9 @@ class User:
         if np.random.random_sample(size=None) >= P_new:
             if not self.cf_returning(neighbors):
                 self.returning()
-                logger.info(f"User {self.uid}: CF return fallback to EPR.")
         else:
             if not self.cf_exploring(neighbors):
                 self.exploring()
-                logger.warning(f"User {self.uid}: CF exploration fallback to EPR.")
 
         self.delta_t = model.utils.temporal_power_law_sampling(par=self.b_param).item()
         self.previous_position = self.position
@@ -323,6 +321,7 @@ class User:
         destination, _venue_index entry, delta_r=None, angle=None.
         """
         if not neighbors:
+            logger.warning(f"User {self.uid}: CF exploration skipped due to no neighbors.")
             return False
 
         my_venues = set(self._venue_index.keys())
@@ -358,18 +357,20 @@ class User:
             self.delta_r = None
             self.angle = None
             return True
-
+        
+        logger.warning(f"User {self.uid}: CF exploration fallback to EPR due to no valid venues from any neighbor.")
         return False
 
     def cf_returning(self, neighbors):
         """
-        CF return step. Selects a venue visited by both a randomly drawn similar
-        user and this user (excluding the current position), chosen proportionally
-        to this user's own visit frequency for those venues.
+        CF return step. Selects a venue visited by both a similar user and this user
+        (excluding the current position), chosen proportionally to this user's own
+        visit frequency for those venues.
 
-        Only one neighbor is sampled. If no common venue exists with that neighbor,
-        returns False immediately, triggering an EPR return fallback in
-        make_decision_cf().
+        Neighbors are tried in a single weighted-random permutation (without
+        replacement), so each neighbor is attempted at most once per call.
+        Returns False only when all neighbors have been tried without finding a
+        common venue, triggering an EPR return fallback in make_decision_cf().
 
         Parameters
         ----------
@@ -397,30 +398,36 @@ class User:
             return False
         probs = weights / weights.sum()
 
-        idx = np.random.choice(len(neighbor_users), p=probs)
-        neighbor = neighbor_users[idx]
+        # Weighted random permutation: try each neighbor at most once
+        order = np.random.choice(len(neighbor_users), size=len(neighbor_users),
+                                replace=False, p=probs)
 
-        neighbor_venue_names = {row[0] for row in neighbor.venue_history[1:]}
+        for idx in order:
+            neighbor = neighbor_users[idx]
+            neighbor_venue_names = {row[0] for row in neighbor.venue_history[1:]}
 
-        # Venues visited by both this user and the chosen neighbor, excluding current position
-        common_rows = [row for row in self.venue_history[1:]
-                       if row[0] in neighbor_venue_names
-                       and (row[2], row[3]) != self.position]
+            # Venues visited by both this user and the chosen neighbor, excluding current position
+            common_rows = [row for row in self.venue_history[1:]
+                        if row[0] in neighbor_venue_names
+                        and (row[2], row[3]) != self.position]
 
-        if not common_rows:
-            return False
+            if not common_rows:
+                continue
 
-        visit_counts = np.array([row[1] for row in common_rows], dtype=float)
-        p = visit_counts / visit_counts.sum()
-        chosen = common_rows[np.random.choice(len(common_rows), p=p)]
+            visit_counts = np.array([row[1] for row in common_rows], dtype=float)
+            p = visit_counts / visit_counts.sum()
+            chosen = common_rows[np.random.choice(len(common_rows), p=p)]
 
-        self.state = "R"
-        self.next_position = (chosen[2], chosen[3])
-        self.next_venue_return = chosen[0]
-        self._row_index = self._venue_index[chosen[0]]
-        self.delta_r = None
-        self.angle = None
-        return True
+            self.state = "R"
+            self.next_position = (chosen[2], chosen[3])
+            self.next_venue_return = chosen[0]
+            self._row_index = self._venue_index[chosen[0]]
+            self.delta_r = None
+            self.angle = None
+            return True
+
+        logger.info(f"User {self.uid}: CF return fallback to EPR due to no common venues with any neighbor.")
+        return False
 
     def get_return_position(self):
         """

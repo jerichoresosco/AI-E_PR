@@ -345,12 +345,13 @@ def compute_stats(user_history_df):
     pd.DataFrame
         Two-column DataFrame with columns ['metric', 'value'].
     """
-    x_traj = np.concatenate(([0], user_history_df["Destination_x_coord"].values))
-    y_traj = np.concatenate(([0], user_history_df["Destination_y_coord"].values))
+    x_traj = np.concatenate((user_history_df["Departure_x_coord"].values[0:1], user_history_df["Destination_x_coord"].values))
+    y_traj = np.concatenate((user_history_df["Departure_y_coord"].values[0:1], user_history_df["Destination_y_coord"].values))
 
     x_cm = np.mean(x_traj)
     y_cm = np.mean(y_traj)
     r_gyr = np.sqrt(np.mean((x_traj - x_cm)**2 + (y_traj - y_cm)**2))
+    
 
     # Top-2 most visited destinations
     top2 = user_history_df["Destination"].value_counts().head(2).index.tolist()
@@ -401,11 +402,11 @@ def compute_rg_over_time(user_history_df):
     n = len(x_vals)
     rg_values = np.empty(n)
 
-    # Initialise with the fixed starting point (0, 0)
-    sum_x  = 0.0
-    sum_y  = 0.0
-    sum_x2 = 0.0
-    sum_y2 = 0.0
+    # Initialise with the starting point
+    sum_x  = user_history_df["Departure_x_coord"].values[0]  
+    sum_y  = user_history_df["Departure_y_coord"].values[0]  
+    sum_x2 = user_history_df["Departure_x_coord"].values[0] ** 2
+    sum_y2 = user_history_df["Departure_y_coord"].values[0] ** 2
     count  = 1          # the origin (0,0) is always part of the trajectory
 
     for i in range(n):
@@ -455,7 +456,7 @@ def compute_s_over_time(user_history_df):
 # LOADERS
 # =============================================================================
 
-def load_parquet_folder(base_folder, filters, file_map, grid=False, return_run_folders=False, random_start=False):
+def load_parquet_folder(base_folder, filters, file_map, grid=False, return_run_folders=False, random_start=False, user_number=None):
     """
     Generic loader for per-user Parquet datasets stored under a parameter folder.
 
@@ -499,6 +500,12 @@ def load_parquet_folder(base_folder, filters, file_map, grid=False, return_run_f
         When False, returns plain user-data dicts (keys from file_map).
         When True, wraps each entry as {"data": <user_dict>, "run_folder": <path>}
         so callers can trace which run folder each user came from.
+    user_number : int or None, optional (default=None)
+        When positive, loading stops as soon as this many users have been
+        accumulated (early-exit — no unnecessary disk reads).
+        When negative or None, all matching users are loaded; the final
+        slicing for negative values is done by the caller via
+        _apply_user_number_slice().
 
     Returns
     -------
@@ -511,9 +518,8 @@ def load_parquet_folder(base_folder, filters, file_map, grid=False, return_run_f
     Notes
     -----
     Run folders that contain a ``_analyzed.lock`` file are silently skipped.
-    The "user_number" logic (first/last N) is handled by the callers
-    load_raw_parquet() and load_analysis_parquet() before calling this function,
-    so this function always loads all users that survive the filter.
+    Run folders are iterated in sorted order so that positive user_number
+    always selects the same deterministic subset of users.
     The "grid" key is handled separately via the grid parameter and must not
     appear in filters; callers are responsible for removing it beforehand.
     """
@@ -583,7 +589,7 @@ def load_parquet_folder(base_folder, filters, file_map, grid=False, return_run_f
                for fk, fv in filters.items()):
             continue
 
-        for run_folder in os.listdir(folder_path):
+        for run_folder in sorted(os.listdir(folder_path)):  # sorted for determinism
             run_path = os.path.join(folder_path, run_folder)
             if not os.path.isdir(run_path):
                 continue
@@ -605,11 +611,22 @@ def load_parquet_folder(base_folder, filters, file_map, grid=False, return_run_f
                 user_indices.sort(key=lambda x: x[0])
                 matching_runs.append((run_path, [s for _, s in user_indices]))
 
+    # Early-exit limit: for positive user_number stop as soon as N users are
+    # accumulated, avoiding unnecessary disk reads.  For negative user_number
+    # (last N) or None (all) we must load everything first.
+    early_stop = user_number if (user_number is not None and user_number > 0) else None
+
     loaded = []
+    done = False
     for run_path, user_indices in matching_runs:
+        if done:
+            break
         total_in_run = len(user_indices)
         milestone    = max(1, total_in_run // 10)
         for pos, idx in enumerate(user_indices):
+            if early_stop is not None and len(loaded) >= early_stop:
+                done = True
+                break
             entry = {}
             for key, suffix in file_map.items():
                 fpath = os.path.join(run_path, f"user_{idx}{suffix}")
@@ -680,7 +697,8 @@ def load_raw_parquet(filters=None, grid = False, return_run_folders=False):
 
     loaded = load_parquet_folder(base_folder, filters_clean, file_map, grid=grid,
                                  return_run_folders=return_run_folders,
-                                 random_start=filters.get("random_start", False))
+                                 random_start=filters.get("random_start", False),
+                                 user_number=user_number)
     loaded = _apply_user_number_slice(loaded, user_number)
 
     logger.info(f"Loaded {len(loaded)} users from raw_data")
@@ -747,7 +765,8 @@ def load_analysis_parquet(filters=None, needed_files=None):
         logger.info(f"Loading only: {sorted(needed_files)}")
 
     loaded = load_parquet_folder(base_folder, filters_clean, file_map, grid=grid,
-                                 random_start=filters.get("random_start", False))
+                                 random_start=filters.get("random_start", False),
+                                 user_number=user_number)
     loaded = _apply_user_number_slice(loaded, user_number)
 
     logger.info(f"Analysis data loaded: {len(loaded)} users")
@@ -760,13 +779,18 @@ def _apply_user_number_slice(loaded, user_number):
 
     Positive user_number → keep first N.
     Negative user_number → keep last N.
-    None                 → keep all.
+    None or 0            → keep all.
+
+    Note: for positive user_number the early-exit in load_parquet_folder already
+    stops loading once N users are accumulated, so this function is typically a
+    no-op in that case.  It is still called for safety and to handle the negative
+    (last-N) case, which requires the full list.
     """
-    if user_number is None:
+    if not user_number:   # covers None and 0 → keep all
         return loaded
-    if user_number >= 0:
+    if user_number > 0:
         return loaded[:user_number]
-    return loaded[user_number:]   # negative index slices from the end
+    return loaded[user_number:]   # negative → last N
 
 
 # =============================================================================
@@ -1326,7 +1350,7 @@ def plot_aggregate_grid(grid_matrix, filters=None, title=None, batch_id=None, ma
         origin="lower",
         aspect="equal",
         cmap=cmap,
-        norm=LogNorm()
+        #norm=LogNorm()
     )
 
     plt.colorbar(im, ax=ax, label="Total visits")

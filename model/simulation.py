@@ -4,6 +4,7 @@ import model.utils
 import pandas as pd
 import os
 from datetime import datetime
+from pprint import pprint
 
 import logging
 logger = logging.getLogger(__name__)
@@ -238,10 +239,18 @@ class Simulation:
         norms = np.linalg.norm(uv_matrix, axis=1, keepdims=True)
         norms[norms == 0] = 1.0
         uv_norm    = uv_matrix / norms
-        sim_matrix = uv_norm @ uv_norm.T      # shape (n_users, n_users)
-        np.fill_diagonal(sim_matrix, 0.0)     # exclude self-similarity
+        sim_matrix = uv_norm @ uv_norm.T
+        np.fill_diagonal(sim_matrix, 0.0)
 
-        # Top-k neighbors per user (positive similarity only)
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        root_dir = os.path.dirname(current_dir)
+        check_dir = os.path.join(root_dir, "check")
+        os.makedirs(check_dir, exist_ok=True)
+
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+
+        np.savetxt(os.path.join(check_dir, f"sim_matrix_{ts}.txt"), sim_matrix, fmt='%.6f')
+
         top_k_actual = min(top_k, n_users - 1)
         cf_neighbors = []
         for ui in range(n_users):
@@ -259,7 +268,10 @@ class Simulation:
             cf_neighbors.append(
                 [(self.users_list[j], float(sims[j])) for j in pos_indices]
             )
-        #print(cf_neighbors)
+
+        with open(os.path.join(check_dir, f"neighbors_{ts}.txt"), "w") as f:
+            for row in cf_neighbors:
+                f.write(",".join(map(str, row)) + "\n")
 
         logger.info(
             f"CF neighbor data built: {n_users} users, {n_venues} unique venues, "
