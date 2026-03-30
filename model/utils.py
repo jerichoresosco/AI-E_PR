@@ -452,6 +452,90 @@ def compute_s_over_time(user_history_df):
     return pd.DataFrame({"clock": clocks, "s": s_values})
 
 
+def compute_gini_coefficient(visit_counts):
+    """
+    Compute the Gini coefficient for a distribution of visit counts,
+    following Equation 1 in Pedreschi et al.:
+
+        G = (1/|V|) * (|V| + 1 - 2 * (∑_{i=1}^{|V|} (|V|+1-i) * x_i) / ∑ x_i)
+
+    where the x_i are sorted in ascending order and only venues with at
+    least one visit are considered.
+
+    A value of 0 means perfect equality (all venues visited equally);
+    higher values indicate increasing concentration of visits on a smaller
+    subset of venues.
+
+    Parameters
+    ----------
+    visit_counts : array-like of int or float
+        Raw visit counts for each venue.  Non-positive entries are ignored.
+
+    Returns
+    -------
+    float
+        Gini coefficient in [0, 1].  Returns 0.0 when fewer than two
+        venues have been visited (degenerate case).
+    """
+    x = np.array(visit_counts, dtype=float)
+    x = x[x > 0]           # keep only venues with ≥1 visit
+    n = len(x)
+    if n <= 1:
+        return 0.0          # trivially equal with 0 or 1 venue
+    x = np.sort(x)          # ascending order required by Eq. 1
+    total = x.sum()
+    if total == 0:
+        return 0.0
+    # ∑_{i=1}^{n} (n+1-i) * x_i   (i is 1-indexed)
+    ranks = np.arange(1, n + 1)
+    weighted_sum = np.dot((n + 1 - ranks), x)
+    return (1.0 / n) * (n + 1 - 2.0 * weighted_sum / total)
+
+
+def compute_individual_gini(venue_history_df):
+    """
+    Compute the individual Gini coefficient for a single user.
+
+    Applies :func:`compute_gini_coefficient` to the per-venue visit counts
+    recorded in the user's venue history (Equation 1 in Pedreschi et al.,
+    restricted to the visits made by this user).
+
+    Parameters
+    ----------
+    venue_history_df : pd.DataFrame
+        User venue history with at least a 'Number of visits' column.
+
+    Returns
+    -------
+    float
+        Individual Gini coefficient in [0, 1].
+    """
+    visit_counts = venue_history_df["Number of visits"].values
+    return compute_gini_coefficient(visit_counts)
+
+
+def compute_collective_gini(collective_venue_counts):
+    """
+    Compute the collective Gini coefficient over the entire dataset.
+
+    Applies :func:`compute_gini_coefficient` to the aggregate visit counts
+    per venue, where each venue's count is the total number of times it was
+    visited across *all* users in the dataset (Equation 1 in Pedreschi et al.).
+
+    Parameters
+    ----------
+    collective_venue_counts : dict
+        Mapping {venue_name: total_visit_count} aggregated across all users.
+
+    Returns
+    -------
+    float
+        Collective Gini coefficient in [0, 1].
+    """
+    visit_counts = list(collective_venue_counts.values())
+    return compute_gini_coefficient(visit_counts)
+
+
 # =============================================================================
 # LOADERS
 # =============================================================================
@@ -1310,6 +1394,167 @@ def load_all_aggregate_grids(filters):
     )
     return param_grid, param_user_count, batch_grids
 
+
+def load_all_batch_stats(filters):
+    """
+    Load batch_stats.parquet from every batch subfolder found inside the
+    matching parameter folder in analysis_data/.
+
+    Uses the same folder-naming convention as :func:`load_all_aggregate_grids`.
+
+    Parameters
+    ----------
+    filters : dict
+        Simulation parameter filters to identify the param folder.
+        Standard keys: "ro", "gamma", "a_param", "b_param", "time".
+        Grid keys (when applicable): "cell_lenght", "cell_number".
+        Optional: "random_start" (bool), "epr_fraction" (float).
+
+    Returns
+    -------
+    batch_stats_list : list of (str, pd.DataFrame)
+        One entry per batch subfolder that contains batch_stats.parquet,
+        as (batch_id, stats_df) pairs sorted by batch_id.
+        Empty list when the param folder does not exist or no file is found.
+    """
+    project_root = os.path.dirname(os.path.dirname(
+        os.path.abspath(inspect.getfile(inspect.currentframe()))
+    ))
+    base_folder = os.path.join(project_root, "analysis_data")
+
+    param_folder_name = (
+        f"ro_{filters['ro']}_gamma_{filters['gamma']}"
+        f"_a_{filters['a_param']}_b_{filters['b_param']}_time_{filters['time']}"
+    )
+    if "cell_lenght" in filters and "cell_number" in filters:
+        param_folder_name += (
+            f"_clen_{filters['cell_lenght']}_cnum_{filters['cell_number']}"
+        )
+        if filters.get("random_start", False):
+            param_folder_name += "_rstart_yes"
+    if filters.get("epr_fraction", 1.0) < 1.0:
+        param_folder_name += f"_efrac_{filters['epr_fraction']}"
+
+    param_folder = os.path.join(base_folder, param_folder_name)
+    if not os.path.exists(param_folder):
+        logger.warning(f"Param folder not found for batch stats: {param_folder}")
+        return []
+
+    batch_stats_list = []
+    for entry in sorted(os.listdir(param_folder)):
+        entry_path = os.path.join(param_folder, entry)
+        if not os.path.isdir(entry_path):
+            continue
+        stats_path = os.path.join(entry_path, "batch_stats.parquet")
+        if os.path.exists(stats_path):
+            stats_df = pd.read_parquet(stats_path)
+            batch_stats_list.append((entry, stats_df))
+
+    logger.info(f"Loaded batch stats for {len(batch_stats_list)} batch(es)")
+    return batch_stats_list
+
+
+def print_batch_stats(batch_stats_list, filters=None, title=None):
+    """
+    Print a formatted summary table of batch-level statistics to stdout.
+
+    Fully generic: iterates over every metric/value row present in each
+    batch_stats.parquet without any hardcoded metric names.  This means
+    that any new metric added to batch_stats.parquet during analysis is
+    automatically displayed here without touching this function.
+
+    One section is printed per batch, mirroring the per-batch loop used
+    by the batch_grid plotter.  When more than one batch is available, a
+    recap table follows with mean and std for every numeric metric.
+
+    Parameters
+    ----------
+    batch_stats_list : list of (str, pd.DataFrame)
+        As returned by :func:`load_all_batch_stats`:
+        (batch_id, stats_df) pairs sorted by batch_id.
+        Each DataFrame must have columns 'metric' and 'value'.
+    filters : dict, optional
+        Simulation parameters — printed as a header line for context.
+    title : str, optional
+        Optional title printed above the output block.
+    """
+    if not batch_stats_list:
+        logger.warning("print_batch_stats: no batch stats to display.")
+        return
+
+    SEP_WIDE   = "=" * 72
+    SEP_NARROW = "-" * 72
+
+    # --- header ---
+    print(f"\n{SEP_WIDE}")
+    if title:
+        print(f"  {title}")
+    else:
+        print("  BATCH STATS SUMMARY")
+    if filters:
+        param_str = "  params: " + ", ".join(f"{k}={v}" for k, v in filters.items())
+        print(param_str)
+    print(f"  {len(batch_stats_list)} batch(es) found")
+    print(SEP_WIDE)
+
+    # recap_data[metric_name] = [value_batch_0, value_batch_1, ...]
+    recap_data = {}
+
+    for batch_id, stats_df in batch_stats_list:
+        print(f"\n  Batch : {batch_id}")
+        print(SEP_NARROW)
+
+        for _, row in stats_df.iterrows():
+            metric = str(row["metric"])
+            value  = row["value"]
+
+            # Format integers without decimal point when the value is whole
+            if isinstance(value, float) and value.is_integer():
+                val_str = f"{int(value):>10d}"
+            else:
+                val_str = f"{value:>10.4f}"
+
+            print(f"    {metric:<30s} {val_str}")
+            recap_data.setdefault(metric, []).append(value)
+
+        print(SEP_NARROW)
+
+    # --- recap table (only when > 1 batch) ---
+    if len(batch_stats_list) > 1:
+        print(f"\n  {'RECAP':^70s}")
+        print(SEP_WIDE)
+
+        # Header: Batch | metric_0 | metric_1 | ...
+        metric_names = list(recap_data.keys())
+        col_w = 12
+        hdr = f"  {'Batch':<26s}" + "".join(f"{m[:col_w]:>{col_w}s}" for m in metric_names)
+        print(hdr)
+        print(SEP_NARROW)
+
+        # One row per batch
+        for idx, (batch_id, stats_df) in enumerate(batch_stats_list):
+            metrics_dict = dict(zip(stats_df["metric"], stats_df["value"]))
+            row_str = f"  {batch_id:<26s}"
+            for m in metric_names:
+                v = metrics_dict.get(m, float("nan"))
+                if isinstance(v, float) and v.is_integer():
+                    row_str += f"{int(v):>{col_w}d}"
+                else:
+                    row_str += f"{v:>{col_w}.4f}"
+            print(row_str)
+
+        # Mean / std rows
+        print(SEP_NARROW)
+        for label, func in [("mean", np.mean), ("std", np.std)]:
+            row_str = f"  {label:<26s}"
+            for m in metric_names:
+                vals = [v for v in recap_data[m] if not np.isnan(v)]
+                row_str += f"{func(vals):>{col_w}.4f}" if vals else f"  {'n/a':>{col_w-2}s}"
+            print(row_str)
+
+        print(SEP_WIDE)
+
+    print()
 
 def plot_aggregate_grid(grid_matrix, filters=None, title=None, batch_id=None, mask_center=True, show=False):
     """ Plot a heatmap of an aggregate grid matrix.

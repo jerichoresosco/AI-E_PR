@@ -33,11 +33,11 @@ def main():
         "gamma": 0.2,
         "a_param": 0.75,
         "b_param": 0.6,
-        "user_number": 5000,
+        "user_number": 500,
         "time": 100000,
         "grid" : True,
         "random_start": True,
-        "epr_fraction": 0.4,        # fraction of 'time' run with pure EPR before CF (1.0 = pure EPR; 0 < x < 1 enables CF phase)
+        "epr_fraction": 0.3,        # fraction of 'time' run with pure EPR before CF (1.0 = pure EPR; 0 < x < 1 enables CF phase)
         "top_k": 10,                # number of similar neighbors used in CF phase
     }
 
@@ -74,10 +74,10 @@ def main():
         "a_param": 0.75,
         "b_param": 0.6,
         "time": 100000,
-        "user_number": 5000,       #For correct displaying
+        "user_number": 500,       #For correct displaying
         "grid": True,
         "random_start": True,      # must match the simulate_params value used
-        "epr_fraction": 0.4,      
+        "epr_fraction": 0.3,      
     }
 
     plot_list = [
@@ -88,7 +88,8 @@ def main():
         #"s_over_time", 
         #"rg_over_time",
         #"aggregate_grid",   
-        "batch_grid",       
+        #"batch_grid",  
+        "batch_stats"     
     ]
 
     show = True #if True only shows the plots, if False only saves them to disk

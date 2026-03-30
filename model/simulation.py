@@ -50,6 +50,9 @@ class Simulation:
         self.aggregate_grid_user_count = 0
         self.batch_grids               = []
 
+        # Batch-level stats -- populated during load_analysis_data()
+        self.batch_stats_list = []
+
         # Set during run(), needed by User objects at decision time
         self.ro    = None
         self.gamma = None
@@ -431,6 +434,11 @@ class Simulation:
         total     = len(self.users_list)
         milestone = max(1, total // 10)
 
+        # Accumulator for collective Gini: {venue_name: total_visits_across_all_users}
+        collective_venue_counts = {}
+        #Accumulator for individual Gini coefficients to compute batch-level average
+        gini_ind_arr = np.array([])
+
         for i, user_entry in enumerate(self.users_list):
             if isinstance(user_entry, model.user.User):
                 user_history_df  = pd.DataFrame(
@@ -446,6 +454,20 @@ class Simulation:
             stats_df        = model.utils.compute_stats(user_history_df)
             rg_over_time_df = model.utils.compute_rg_over_time(user_history_df)
             s_over_time_df  = model.utils.compute_s_over_time(user_history_df)
+
+            # --- Individual Gini coefficient ---
+            gini_ind = model.utils.compute_individual_gini(venue_history_df)
+            gini_row = pd.DataFrame([{"metric": "gini_individual", "value": gini_ind}])
+            stats_df = pd.concat([stats_df, gini_row], ignore_index=True)
+            gini_ind_arr = np.append(gini_ind_arr, gini_ind)
+
+            # --- Accumulate venue counts for collective Gini ---
+            for _, row in venue_history_df.iterrows():
+                venue  = row["Venue_name"]
+                visits = row["Number of visits"]
+                collective_venue_counts[venue] = (
+                    collective_venue_counts.get(venue, 0) + visits
+                )
 
             user_history_df.to_parquet(
                 os.path.join(analysis_folder, f"user_{i}_history.parquet"),      index=False)
@@ -473,6 +495,20 @@ class Simulation:
             if (i + 1) % milestone == 0 or (i + 1) == total:
                 pct = ((i + 1) / total) * 100
                 logger.info(f"Analysis progress: {pct:.0f}% ({i+1}/{total} users)")
+
+        # Individual Gini Batch
+        gini_ind_batch = np.mean(gini_ind_arr)
+        # Collective Gini coefficient (batch level)
+        gini_coll = model.utils.compute_collective_gini(collective_venue_counts)
+        batch_stats_df = pd.DataFrame([
+            {"metric": "gini_collective",     "value": gini_coll},
+            {"metric": "gini_individual",     "value": gini_ind_batch},
+            {"metric": "n_users",             "value": float(total)},
+            {"metric": "n_venues_collective", "value": float(len(collective_venue_counts))},
+        ])
+        batch_stats_df.to_parquet(
+            os.path.join(analysis_folder, "batch_stats.parquet"), index=False
+        )
 
         if analyse_params.get("grid", False):
             model.utils.compute_and_save_aggregate_grid(analysis_folder)
@@ -523,18 +559,21 @@ class Simulation:
             "rg_over_time":      {"rg_over_time"},
             "aggregate_grid":    set(),   # only aggregate parquet, no per-user data
             "batch_grid":        set(),
+            "batch_stats":       set(),   # only batch_stats.parquet, no per-user data
         }
 
         if plot_list is not None:
             needed_files = set()
             for p in plot_list:
                 needed_files |= _PLOT_FILE_NEEDS.get(p, set())
-            needs_user_data = bool(needed_files)
-            needs_grids     = any(p in ("aggregate_grid", "batch_grid") for p in plot_list)
+            needs_user_data   = bool(needed_files)
+            needs_grids       = any(p in ("aggregate_grid", "batch_grid") for p in plot_list)
+            needs_batch_stats = "batch_stats" in plot_list
         else:
-            needed_files    = None   # load everything
-            needs_user_data = True
-            needs_grids     = True
+            needed_files      = None   # load everything
+            needs_user_data   = True
+            needs_grids       = True
+            needs_batch_stats = True
 
         logger.info("Loading analysis data...")
         if plot_list is not None:
@@ -610,6 +649,14 @@ class Simulation:
             self.aggregate_grid            = None
             self.aggregate_grid_user_count = 0
             self.batch_grids               = []
+
+        # ------------------------------------------------------------------
+        # Batch stats load (skipped when batch_stats is not in plot_list)
+        # ------------------------------------------------------------------
+        if needs_batch_stats:
+            self.batch_stats_list = model.utils.load_all_batch_stats(filters)
+        else:
+            self.batch_stats_list = []
 
     def plot(self, plot_list, show=False):
         """
@@ -688,6 +735,15 @@ class Simulation:
                     )
             else:
                 logger.warning("No batch-level aggregate grids available to plot.")
+        if "batch_stats" in plot_list:
+            if self.batch_stats_list:
+                model.utils.print_batch_stats(
+                    self.batch_stats_list,
+                    filters=pg,
+                    title=model.utils.build_plot_title("Batch Stats", pg),
+                )
+            else:
+                logger.warning("No batch stats available to print.")
 
     # ==========================================================================
     # UTILITY
