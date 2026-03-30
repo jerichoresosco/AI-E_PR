@@ -700,7 +700,7 @@ class Simulation:
                 show=self._show
             )
         if "s_over_time" in plot_list:
-            model.utils.plot_new_s_over_time_from_df(
+            model.utils.plot_S_over_time_from_df(
                 self.all_s_over_time, filters=p, bins_per_decade=10,
                 title=model.utils.build_plot_title("S over time", p),
                 show=self._show

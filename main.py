@@ -34,7 +34,7 @@ def main():
         "a_param": 0.75,
         "b_param": 0.6,
         "user_number": 500,
-        "time": 100000,
+        "time": 1000000,
         "grid" : True,
         "random_start": True,
         "epr_fraction": 0.3,        # fraction of 'time' run with pure EPR before CF (1.0 = pure EPR; 0 < x < 1 enables CF phase)
@@ -44,8 +44,8 @@ def main():
     ##TOPK STILL NOT IN THE SAVING/PLOT PROCEDURE!!!!!1
 
     grid_params = {
-        "cell_lenght": 51, #must be odd to have a central cell
-        "cell_number": 51
+        "cell_lenght": 101, #must be odd to have a central cell
+        "cell_number": 101
     }
 
     # ----------------------------------------------------------
@@ -73,7 +73,7 @@ def main():
         "gamma": 0.2,
         "a_param": 0.75,
         "b_param": 0.6,
-        "time": 100000,
+        "time": 1000000,
         "user_number": 500,       #For correct displaying
         "grid": True,
         "random_start": True,      # must match the simulate_params value used
@@ -87,12 +87,12 @@ def main():
         #"two_radius", 
         #"s_over_time", 
         #"rg_over_time",
-        #"aggregate_grid",   
-        #"batch_grid",  
-        "batch_stats"     
+        "aggregate_grid",   
+        #"batch_grid",  ##Problems in saving due to max lenght titole 260 characters
+        #"batch_stats"     
     ]
 
-    show = True #if True only shows the plots, if False only saves them to disk
+    show = False #if True only shows the plots, if False only saves them to disk
 
     start_time = time.time()
     logger.info(f"Running mode: {mode}")
