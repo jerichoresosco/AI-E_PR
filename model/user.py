@@ -3,6 +3,7 @@ import pandas as pd
 import model.utils 
 import logging
 from pprint import pprint
+import model.grid
 
 logger = logging.getLogger(__name__)
 
@@ -45,9 +46,9 @@ class User:
     next_venue_return : int or None
         Index of the venue selected for a return movement.
     delta_r : float or None
-        Travel distance for exploration steps. None if returning.
+        Travel distance for exploration steps. None if returning or CF move.
     angle : float or None
-        Travel angle for exploration steps. None if returning.
+        Travel angle for exploration steps. None if returning or CF move.
     delta_t : float or None
         Waiting time at the current venue.
     clock : float
@@ -74,10 +75,19 @@ class User:
     make_decision()
         Determines whether the user explores or returns, updates movement,
         waiting time, clock, and histories.
+    make_decision_cf(neighbors)
+        CF variant of make_decision. Uses EPR probability to choose E/R, then
+        delegates to cf_exploring / cf_returning, falling back to EPR if needed.
     exploring()
         Executes an exploration step, selecting a new unvisited venue and updating state.
     returning()
         Executes a return step, selecting a previously visited venue based on visit frequency.
+    cf_exploring(neighbors)
+        CF exploration: picks a venue visited by a similar user but not yet by this user.
+        Tries neighbors in weighted-random order; returns False if all are exhausted.
+    cf_returning(neighbors)
+        CF return: picks a venue visited by both a similar user and this user.
+        Returns False (triggering EPR fallback) if no common venue exists.
     get_return_position()
         Selects a return venue using a frequency-weighted probability distribution and
         returns its coordinates.
@@ -92,7 +102,7 @@ class User:
         storing results in the stats table.
     """
     
-    def __init__(self, uid, a_param, b_param, simulation):
+    def __init__(self, uid, a_param, b_param, simulation, grid=False, initial_position=None):
         """
         Initializes a new User instance, sets default attributes, internal indices,
         initial position, and immediately performs the first mandatory exploration step.
@@ -107,6 +117,12 @@ class User:
             Temporal power-law parameter.
         simulation : Simulation
             Reference to the parent simulation object providing model parameters.
+        grid : bool or Grid-like, optional
+            Whether to attach a Grid to this user (default False).
+        initial_position : tuple of float, optional
+            (x, y) Cartesian starting coordinates.  When None (default) the
+            origin (0, 0) is used.  When provided the user's first venue and
+            the grid cell counter are initialised at this position instead.
 
         Notes
         -----
@@ -120,18 +136,30 @@ class User:
         self.a_param = a_param
         self.b_param = b_param
 
+        # Resolve starting position: use provided value or default to origin
+        _start = initial_position if initial_position is not None else (0, 0)
+
+        self.has_grid = (grid is not False)
+        if self.has_grid:
+            self.grid = model.grid.Grid(
+                cell_lenght=simulation.grid_cell_lenght,
+                cell_number=simulation.grid_cell_number,
+                initial_position=_start if initial_position is not None else None
+            )
+
+        _first_venue_name = self._position_to_cell_name(_start) if self.has_grid else "Venue_1"
 
         self.user_history = [["State(E/R)", "Departure","Departure_x_coord", "Departure_y_coord", "Destination","Destination_x_coord", "Destination_y_coord", "Distance", "Angle", "Delta_t", "Clock"]] 
-        self.venue_history = [["Venue_name", "Number of visits", "Venue_x_coord", "Venue_y_coord"], ["Venue_1", 1, 0, 0]]
+        self.venue_history = [["Venue_name", "Number of visits", "Venue_x_coord", "Venue_y_coord"], [_first_venue_name, 1, _start[0], _start[1]]]
         self.num_distinct_venues = 1 ##lo sostituirò con num di elementi colonna history?
         self.simulation = simulation 
         self.state = None
  
         self.previous_position = None
-        self.position = (0,0)
+        self.position = _start
         self.next_position = None
 
-        self.departure = "Venue_1"
+        self.departure = _first_venue_name
         self.destination = None
         self.previous_destination= None
 
@@ -149,11 +177,15 @@ class User:
 
 
 
-        self._venue_index = {"Venue_1": 1}
+        self._venue_index = {_first_venue_name: 1}
         self._row_index = None
 
         self.first_exploration()
 
+
+    def _position_to_cell_name(self, position):
+        return self.grid.position_to_cell_name(position)
+    
 
     def make_decision(self):
         """
@@ -189,6 +221,48 @@ class User:
         self.departure = self.user_history[-1][self.user_history[0].index("Destination")]
         self.clock = self.clock + self.delta_t
         self.update_histories()
+        if self.has_grid:
+            self.grid.update_cell_value_given_position(self.position)
+
+    def make_decision_cf(self, neighbors):
+        """
+        CF variant of make_decision. Uses the same EPR probability to decide
+        between exploration and return, then delegates to the CF movement methods.
+        Falls back to standard EPR movement when no CF-compatible venues are found.
+
+        Parameters
+        ----------
+        neighbors : list of (User, float)
+            Pre-computed list of (neighbor_user, similarity_weight) pairs,
+            sorted by descending similarity, produced by Simulation._build_cf_data().
+
+        Notes
+        -----
+        - E/R decision uses the same P_new as EPR.
+        - CF exploration: venue from similar user not yet visited by this user.
+          Fallback to EPR exploration if all neighbors are exhausted.
+        - CF return: venue visited by both a selected similar user and this user.
+          Fallback to EPR return if no common venue exists with the drawn neighbor.
+        - delta_r and angle are set to None for CF moves (no spatial sampling).
+        - delta_t is always sampled from the temporal power-law, same as EPR.
+        """
+        P_new = self.simulation.ro * self.num_distinct_venues ** (-self.simulation.gamma)
+
+        if np.random.random_sample(size=None) >= P_new:
+            if not self.cf_returning(neighbors):
+                self.returning()
+        else:
+            if not self.cf_exploring(neighbors):
+                self.exploring()
+
+        self.delta_t = model.utils.temporal_power_law_sampling(par=self.b_param).item()
+        self.previous_position = self.position
+        self.position = self.next_position
+        self.departure = self.user_history[-1][self.user_history[0].index("Destination")]
+        self.clock = self.clock + self.delta_t
+        self.update_histories()
+        if self.has_grid:
+            self.grid.update_cell_value_given_position(self.position)
 
     def exploring(self):
             """
@@ -205,8 +279,8 @@ class User:
             self.state = "E"
             self.num_distinct_venues += 1
             self.next_position = self.get_exploration_venue()
-            self.destination = f"Venue_{self.num_distinct_venues}"
-            self._venue_index[f"Venue_{self.num_distinct_venues}"] = len(self.venue_history) 
+            self.destination = self._position_to_cell_name(self.next_position) if self.has_grid else f"Venue_{self.num_distinct_venues}"
+            self._venue_index[self.destination] = len(self.venue_history) 
 
     def returning(self):
             """
@@ -216,9 +290,144 @@ class User:
             """
             self.state = "R"
             self.next_position = self.get_return_position()
-            self.destination = f"Venue_{self.next_venue_return}"
+            self.destination = self.next_venue_return
             self.delta_r = None
             self.angle = None    
+
+    def cf_exploring(self, neighbors):
+        """
+        CF exploration step. Searches for a venue visited by a similar user that
+        this user has not yet visited, selected proportionally to the similar user's
+        visit frequency for that venue.
+
+        Neighbors are tried in a single weighted-random permutation (without
+        replacement), so each neighbor is attempted at most once per call.
+        Returns False when all neighbors have been tried without finding a valid
+        venue, triggering an EPR exploration fallback in make_decision_cf().
+
+        Parameters
+        ----------
+        neighbors : list of (User, float)
+            (neighbor_user, similarity_weight) pairs.
+
+        Returns
+        -------
+        bool
+            True if a CF venue was found and state was updated; False otherwise.
+
+        Notes
+        -----
+        On success sets: state="E", num_distinct_venues, next_position,
+        destination, _venue_index entry, delta_r=None, angle=None.
+        """
+        if not neighbors:
+            logger.warning(f"User {self.uid}: CF exploration skipped due to no neighbors.")
+            return False
+
+        my_venues = set(self._venue_index.keys())
+
+        neighbor_users = [u for u, _ in neighbors]
+        weights = np.array([w for _, w in neighbors], dtype=float)
+        if weights.sum() == 0:
+            logger.warning(f"User {self.uid}: CF exploration skipped due to zero similarity weights.")
+            return False
+        probs = weights / weights.sum()
+
+        # Weighted random permutation: try each neighbor at most once
+        order = np.random.choice(len(neighbor_users), size=len(neighbor_users),
+                                 replace=False, p=probs)
+
+        for idx in order:
+            neighbor = neighbor_users[idx]
+            # Venues visited by this neighbor but not yet by current user
+            candidate_rows = [row for row in neighbor.venue_history[1:]
+                              if row[0] not in my_venues]
+            if not candidate_rows:
+                continue
+
+            visit_counts = np.array([row[1] for row in candidate_rows], dtype=float)
+            p = visit_counts / visit_counts.sum()
+            chosen = candidate_rows[np.random.choice(len(candidate_rows), p=p)]
+
+            self.state = "E"
+            self.num_distinct_venues += 1
+            self.next_position = (chosen[2], chosen[3])
+            self.destination = chosen[0]
+            self._venue_index[self.destination] = len(self.venue_history)#?
+            self.delta_r = None
+            self.angle = None
+            return True
+        
+        logger.warning(f"User {self.uid}: CF exploration fallback to EPR due to no valid venues from any neighbor.")
+        return False
+
+    def cf_returning(self, neighbors):
+        """
+        CF return step. Selects a venue visited by both a similar user and this user
+        (excluding the current position), chosen proportionally to this user's own
+        visit frequency for those venues.
+
+        Neighbors are tried in a single weighted-random permutation (without
+        replacement), so each neighbor is attempted at most once per call.
+        Returns False only when all neighbors have been tried without finding a
+        common venue, triggering an EPR return fallback in make_decision_cf().
+
+        Parameters
+        ----------
+        neighbors : list of (User, float)
+            (neighbor_user, similarity_weight) pairs.
+
+        Returns
+        -------
+        bool
+            True if a CF venue was found and state was updated; False otherwise.
+
+        Notes
+        -----
+        On success sets: state="R", next_position, next_venue_return,
+        _row_index, delta_r=None, angle=None.
+        """
+        if not neighbors:
+            logger.info(f"User {self.uid}: CF return skipped due to no neighbors.")
+            return False
+
+        neighbor_users = [u for u, _ in neighbors]
+        weights = np.array([w for _, w in neighbors], dtype=float)
+        if weights.sum() == 0:
+            logger.info(f"User {self.uid}: CF return skipped due to zero similarity weights.")
+            return False
+        probs = weights / weights.sum()
+
+        # Weighted random permutation: try each neighbor at most once
+        order = np.random.choice(len(neighbor_users), size=len(neighbor_users),
+                                replace=False, p=probs)
+
+        for idx in order:
+            neighbor = neighbor_users[idx]
+            neighbor_venue_names = {row[0] for row in neighbor.venue_history[1:]}
+
+            # Venues visited by both this user and the chosen neighbor, excluding current position
+            common_rows = [row for row in self.venue_history[1:]
+                        if row[0] in neighbor_venue_names
+                        and (row[2], row[3]) != self.position]
+
+            if not common_rows:
+                continue
+
+            visit_counts = np.array([row[1] for row in common_rows], dtype=float)
+            p = visit_counts / visit_counts.sum()
+            chosen = common_rows[np.random.choice(len(common_rows), p=p)]
+
+            self.state = "R"
+            self.next_position = (chosen[2], chosen[3])
+            self.next_venue_return = chosen[0]
+            self._row_index = self._venue_index[chosen[0]]
+            self.delta_r = None
+            self.angle = None
+            return True
+
+        logger.info(f"User {self.uid}: CF return fallback to EPR due to no common venues with any neighbor.")
+        return False
 
     def get_return_position(self):
         """
@@ -251,24 +460,45 @@ class User:
         choice = np.random.choice(len(venue_ids), p=prob)
 
         #Retriving the right number/position in the history matching with the choice in venue_ids
-        self.next_venue_return = [i for i, row in enumerate(self.venue_history) if row[0] == venue_ids[choice]][0]
+        self.next_venue_return = venue_ids[choice]
 
         col_x_index = self.venue_history[0].index("Venue_x_coord")
         col_y_index = self.venue_history[0].index("Venue_y_coord")
 
-        self._row_index = self._venue_index[f"Venue_{self.next_venue_return}"]
+        self._row_index = self._venue_index[self.next_venue_return]
 
         return self.venue_history[self._row_index][col_x_index], self.venue_history[self._row_index][col_y_index]
 
     
     def get_exploration_venue(self):
         """
-        This method will contain the logic of exploration :)
+        Generates a new exploration destination using spatial power-law sampling.
 
+        If a grid is active (has_grid=True), samples candidate positions until one
+        falls in an unvisited cell, then marks that cell as visited.
+        If no grid is active, a single sample is drawn unconditionally.
+
+        Returns
+        -------
+        tuple of float
+            (x, y) Cartesian coordinates of the chosen exploration destination.
         """
-        self.delta_r = model.utils.spatial_power_law_sampling(par=self.a_param).item()
-        self.angle = np.random.uniform(0, 2 * np.pi)
-        next_position = model.utils.polar_to_cartesian(self.delta_r, self.angle)
+        if self.has_grid:
+            saturation = 0
+            while True:
+                self.delta_r = model.utils.spatial_power_law_sampling(par=self.a_param).item()
+                self.angle = np.random.uniform(0, 2 * np.pi)
+                next_position = model.utils.polar_to_cartesian(self.delta_r, self.angle, position=self.position)
+                cell_value = self.grid.get_cell_value_given_position(next_position)
+                if cell_value is not False and cell_value == 0:
+                    break
+                saturation += 1
+                if saturation > 100000:
+                    raise RuntimeError(f"User {self.uid}: Unable to find unvisited cell after 100000 attempts. Check grid parameters or user density.")
+        else:
+            self.delta_r = model.utils.spatial_power_law_sampling(par=self.a_param).item()
+            self.angle = np.random.uniform(0, 2 * np.pi)
+            next_position = model.utils.polar_to_cartesian(self.delta_r, self.angle, position=self.position)
         return next_position
     
     def first_exploration(self):
@@ -283,6 +513,8 @@ class User:
         self.position = self.next_position
         self.clock += self.delta_t
         self.update_histories()
+        if self.has_grid:
+            self.grid.update_cell_value_given_position(self.position)
 
     def update_histories(self):
         """
@@ -299,39 +531,3 @@ class User:
             self.venue_history[self._row_index][self.venue_history[0].index("Number of visits")] += 1
             self.user_history.append([self.state, self.departure, *self.previous_position,
                                     self.destination, *self.position, self.delta_r, self.angle, self.delta_t, self.clock])
-    
-    def calculate_statistics(self):
-        """"
-        Computes trajectory-based metrics, including:
-        - center of mass (full trajectory)
-        - center of mass using top-2 most visited venues
-        - radius of gyration (full)
-        - radius of gyration using top-2 venues
-        """
-
-        x_traj, y_traj = model.utils.get_trajectory_arrays(self, k_top=None)
-        x_traj_two, y_traj_two = model.utils.get_trajectory_arrays(self, k_top=2)
-
-        x_cm = np.mean(x_traj)
-        y_cm = np.mean(y_traj)
-
-        x_cm_two = np.mean(x_traj_two)
-        y_cm_two = np.mean(y_traj_two)
-
-        self.r_cm = np.array([x_cm, y_cm])
-        self.r_cm_two = np.array([x_cm_two, y_cm_two])
-
-        self.r_gyr = np.sqrt(np.mean((x_traj - x_cm)**2 + (y_traj - y_cm)**2))
-        self.r_gyr_two = np.sqrt(np.mean((x_traj_two - x_cm_two)**2 + (y_traj_two - y_cm_two)**2))
-
-        self.stats = [
-                    ["metric", "value"],
-                    ["x_center of mass", x_cm],
-                    ["x_center of mass two", x_cm_two],
-                    ["y_center of mass", y_cm],
-                    ["y_center of mass two", y_cm_two],
-                    ["radius of gyration", self.r_gyr],
-                    ["radius of gyration two", self.r_gyr_two]
-        ]
-                
-    

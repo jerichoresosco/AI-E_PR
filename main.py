@@ -33,8 +33,19 @@ def main():
         "gamma": 0.2,
         "a_param": 0.75,
         "b_param": 0.6,
-        "user_number": 100,
-        "time": 1000,
+        "user_number": 500,
+        "time": 100000,
+        "grid" : True,
+        "random_start": True,
+        "epr_fraction": 0.3,        # fraction of 'time' run with pure EPR before CF (1.0 = pure EPR; 0 < x < 1 enables CF phase)
+        "top_k": 10,                # number of similar neighbors used in CF phase
+    }
+
+    ##TOPK STILL NOT IN THE SAVING/PLOT PROCEDURE!!!!!1
+
+    grid_params = {
+        "cell_lenght": 51, #must be odd to have a central cell
+        "cell_number": 51
     }
 
     # ----------------------------------------------------------
@@ -48,7 +59,8 @@ def main():
         "gamma": 0.2,
         "a_param": 0.75,
         "b_param": 0.6,
-        "time": 1000,
+        "time": 100000,
+        "grid" : True
     }
 
     # ----------------------------------------------------------
@@ -61,18 +73,26 @@ def main():
         "gamma": 0.2,
         "a_param": 0.75,
         "b_param": 0.6,
-        "time": 1000,
-        "user_number": 10,
+        "time": 100000,
+        "user_number": 500,       #For correct displaying
+        "grid": True,
+        "random_start": True,      # must match the simulate_params value used
+        "epr_fraction": 0.3,      
     }
 
     plot_list = [
-        "mobility",
-        #"rg_distribution",
-        "freq_distribution",
-        #"two_radius",
-        #"s_over_time",
+        #"mobility",
+        #"rg_distribution", #checked but still double plot
+        #"freq_distribution", 
+        #"two_radius", 
+        #"s_over_time", 
         #"rg_over_time",
+        #"aggregate_grid",   
+        #"batch_grid",  
+        "batch_stats"     
     ]
+
+    show = True #if True only shows the plots, if False only saves them to disk
 
     start_time = time.time()
     logger.info(f"Running mode: {mode}")
@@ -83,7 +103,7 @@ def main():
     if mode == "simulate":
 
         simulation = model.simulation.Simulation()
-        simulation.run(simulate_params)
+        simulation.run(simulate_params, grid_params=grid_params)
         simulation.save_raw_data()
 
     # ==========================================================
@@ -92,7 +112,7 @@ def main():
     elif mode == "analyse":
 
         simulation = model.simulation.Simulation()
-        simulation.run_analysis(analyse_params)
+        simulation.run_analysis(analyse_params, grid_params=grid_params)
 
     # ==========================================================
     # MODE 3: SIMULATE + ANALYSE (no double disk load)
@@ -100,9 +120,9 @@ def main():
     elif mode == "simulate_and_analyse":
 
         simulation = model.simulation.Simulation()
-        simulation.run(simulate_params)
+        simulation.run(simulate_params, grid_params=grid_params)
         raw_run_folder = simulation.save_raw_data()
-        simulation.run_analysis(simulate_params, raw_run_folder=raw_run_folder)
+        simulation.run_analysis(simulate_params, raw_run_folder=raw_run_folder, grid_params=grid_params)
 
     # ==========================================================
     # MODE 4: PLOT only
@@ -110,8 +130,8 @@ def main():
     elif mode == "plot":
 
         simulation = model.simulation.Simulation()
-        simulation.load_analysis_data(plot_params)
-        simulation.plot(plot_list)
+        simulation.load_analysis_data(plot_params, grid_params=grid_params, plot_list=plot_list)
+        simulation.plot(plot_list, show=show)
 
     else:
         raise ValueError(
