@@ -1138,21 +1138,19 @@ def plot_S_over_time_from_df(s_over_time_list, filters=None, title=None, bins_pe
 
     for df in s_over_time_list:
         clocks = df["clock"].values
-        s     = df["s"].values
-        #max_s = s.max() Creating troubles!!!!!!!!!! s can decrease and max =\ from last value
-        last_s = s[-1]
-        if last_s == 0:
-            logger.warning(f"Last s value is 0 for user in DataFrame")
+        s = df["s"].values
+        idx_s1 = np.where(s >= 1.0)[0]
+        if len(idx_s1) == 0:
             continue
+        t_reach_1 = clocks[idx_s1[0]]
+
         for t in sample_times:
-            # Last record whose clock is ≤ t  (last-before rule)
+            if t < t_reach_1:
+                continue
+            # Ultimo record prima di t (last-before rule)
             mask = clocks <= t
-            if not mask.any():
-                #0% for those who haven't started yet 
-                pct_by_time[t].append(0.0)
-            else:
-                idx = int(np.where(mask)[0][-1])
-                pct_by_time[t].append(s[idx])
+            idx = int(np.where(mask)[0][-1])
+            pct_by_time[t].append(s[idx])
 
     # Average across users for each sample time
     sample_t_plot = []
@@ -1183,8 +1181,7 @@ def plot_r_gyr_over_time_from_df(rg_over_time_list, filters=None, title=None, bi
 
     For every log-spaced sample time T, each user contributes the rg value
     recorded at the last event with clock ≤ T (last-before rule), divided by
-    their own maximum rg.  The per-user percentages are then averaged to obtain
-    the mean fractional progress toward the final rg.
+    their own final rg. Users are included **only after their rg becomes non-zero**.
 
     Parameters
     ----------
@@ -1198,7 +1195,7 @@ def plot_r_gyr_over_time_from_df(rg_over_time_list, filters=None, title=None, bi
         Number of log-spaced sample points per decade of time (default 4).
         The maximum clock value is always included as the last sample point.
     """
-    logger.info("Plotting r_gyr over time (normalised percentage, from analysis data)")
+    logger.info("Plotting r_gyr over time (normalized percentage, from analysis data)")
 
     if not rg_over_time_list:
         logger.warning("No rg-over-time data available to plot")
@@ -1212,32 +1209,34 @@ def plot_r_gyr_over_time_from_df(rg_over_time_list, filters=None, title=None, bi
     num_samples = max(2, int(round((log_max - log_min) * bins_per_decade)))
     sample_times = np.logspace(log_min, log_max, num_samples)
     # Force exact max to avoid floating-point near-misses (10**log10(x) ≠ x)
-    sample_times[-1] = max_c
+    sample_times[-1] = max_c 
 
-    # For each sample time collect the normalised rg from every user
+    # For each sample time collect the normalized rg from each user
     pct_by_time = {t: [] for t in sample_times}
 
     for df in rg_over_time_list:
         clocks = df["clock"].values
-        rg     = df["rg"].values
-        #max_rg = rg.max() Creating troubles!!!!!!!!!! rg can decrease and max =\ from last value
-        last_rg = rg[-1]
-        if last_rg == 0:
-            logger.warning(f"Last rg value is 0 for user in DataFrame")
-            continue
-        for t in sample_times:
-            # Last record whose clock is ≤ t  (last-before rule)
-            mask = clocks <= t
-            if not mask.any():
-                #0% for those who haven't started yet 
-                pct_by_time[t].append(0.0)
-            else:
-                idx = int(np.where(mask)[0][-1])
-                pct_by_time[t].append(rg[idx] / last_rg * 100.0)
+        rg = df["rg"].values
 
-    # Average across users for each sample time
+        idx_start = np.where(rg > 0)[0]
+        if len(idx_start) == 0:
+            continue
+        t_start = clocks[idx_start[0]]
+        final_rg = rg[-1]
+        if final_rg == 0:
+            logger.warning("Final rg is 0 despite rg > 0 earlier, skipping user")
+            continue
+
+        for t in sample_times:
+            if t < t_start:
+                continue  
+            mask = clocks <= t
+            idx = int(np.where(mask)[0][-1])
+            pct_by_time[t].append(rg[idx] / final_rg * 100.0)
+
+    # Average across users
     sample_t_plot = []
-    avg_pct_plot  = []
+    avg_pct_plot = []
     for t in sample_times:
         vals = pct_by_time[t]
         if vals:
@@ -1247,10 +1246,8 @@ def plot_r_gyr_over_time_from_df(rg_over_time_list, filters=None, title=None, bi
     plt.figure(figsize=(8, 5))
     plt.scatter(sample_t_plot, avg_pct_plot, marker='o')
     plt.xscale("log")
-    #plt.yscale("log")
     plt.xlabel("Clock")
     plt.ylabel(r"$r_g(t)\,/\,r_g^{last}$ [%]")
-    #plt.ylim(0, 105)
     plt.grid(True, which="both", ls="--", alpha=0.5)
     if title:
         plt.title(title, fontsize=7)
