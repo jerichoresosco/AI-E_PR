@@ -1,6 +1,7 @@
 import numpy as np
 import model.user
 import model.utils
+import model.utils_plot
 import pandas as pd
 import os
 from datetime import datetime
@@ -332,7 +333,7 @@ class Simulation:
                 f.write(",".join(map(str, row)) + "\n")
 
         # Plot similarity distribution for this interval
-        model.utils.plot_cf_neighbor_similarity_distribution(
+        model.utils_plot.plot_cf_neighbor_similarity_distribution(
             cf_neighbors,
             check_run_dir=check_run_dir,
             interval_idx=interval_idx,
@@ -497,10 +498,9 @@ class Simulation:
         total     = len(self.users_list)
         milestone = max(1, total // 10)
 
-        # Accumulator for collective Gini: {venue_name: total_visits_across_all_users}
-        collective_venue_counts = {}
-        #Accumulator for individual Gini coefficients to compute batch-level average
-        gini_ind_arr = np.array([])
+        #List of raw data
+        user_history_df_list = []
+        venue_history_df_list = []
 
         for i, user_entry in enumerate(self.users_list):
             if isinstance(user_entry, model.user.User):
@@ -514,23 +514,12 @@ class Simulation:
             else:
                 user_history_df, venue_history_df = user_entry
 
+            user_history_df_list.append(user_history_df)
+            venue_history_df_list.append(venue_history_df)
+
             stats_df        = model.utils.compute_stats(user_history_df)
             rg_over_time_df = model.utils.compute_rg_over_time(user_history_df)
             s_over_time_df  = model.utils.compute_s_over_time(user_history_df)
-
-            # Individual Gini coefficient
-            gini_ind = model.utils.compute_individual_gini(venue_history_df)
-            gini_row = pd.DataFrame([{"metric": "gini_individual", "value": gini_ind}])
-            stats_df = pd.concat([stats_df, gini_row], ignore_index=True)
-            gini_ind_arr = np.append(gini_ind_arr, gini_ind)
-
-            # Accumulate venue counts for collective Gini
-            for _, row in venue_history_df.iterrows():
-                venue  = row["Venue_name"]
-                visits = row["Number of visits"]
-                collective_venue_counts[venue] = (
-                    collective_venue_counts.get(venue, 0) + visits
-                )
 
             user_history_df.to_parquet(
                 os.path.join(analysis_folder, f"user_{i}_history.parquet"),      index=False)
@@ -559,15 +548,16 @@ class Simulation:
                 pct = ((i + 1) / total) * 100
                 logger.info(f"Analysis progress: {pct:.0f}% ({i+1}/{total} users)")
 
-        # Individual Gini Batch
-        gini_ind_batch = np.mean(gini_ind_arr)
-        # Collective Gini coefficient (batch level)
-        gini_coll = model.utils.compute_collective_gini(collective_venue_counts)
+        # Individual Gini 
+        gini_ind = model.utils.compute_individual_gini(venue_history_df_list) 
+        # Collective Gini coefficient 
+        gini_coll = model.utils.compute_collective_gini(venue_history_df_list)
         batch_stats_df = pd.DataFrame([
             {"metric": "gini_collective",     "value": gini_coll},
-            {"metric": "gini_individual",     "value": gini_ind_batch},
+            {"metric": "gini_individual",     "value": gini_ind},
             {"metric": "n_users",             "value": float(total)},
-            {"metric": "n_venues_collective", "value": float(len(collective_venue_counts))},
+            #{"metric": "n_venues_collective", "value": float(len(collective_venue_counts))},
+            #collective_venue_counts is now inside the compute_collective_gini function, and its length is not returned.
         ])
         batch_stats_df.to_parquet(
             os.path.join(analysis_folder, "batch_stats.parquet"), index=False
@@ -738,48 +728,48 @@ class Simulation:
         pg = self._plot_grid_params
 
         if "mobility" in plot_list:
-            model.utils.plot_mobility_visualization(
+            model.utils_plot.plot_mobility_visualization(
                 self.last_user_history, self.last_venue_history,
                 stats=self.last_stats,
-                filters=p, title=model.utils.build_plot_title("User Mobility", p),
+                filters=p, title=model.utils_plot.build_plot_title("User Mobility", p),
                 show=self._show
             )
         if "rg_distribution" in plot_list:
-            model.utils.plot_rg_distribution(
+            model.utils_plot.plot_rg_distribution(
                 self.rg_list,
-                filters=p, title=model.utils.build_plot_title("RG Distribution", p),
+                filters=p, title=model.utils_plot.build_plot_title("RG Distribution", p),
                 show=self._show
             )
         if "freq_distribution" in plot_list:
-            model.utils.plot_frequency_distribution(
+            model.utils_plot.plot_frequency_distribution(
                 self.venue_history_list, self.gamma,
-                filters=p, title=model.utils.build_plot_title("Frequency Distribution", p),
+                filters=p, title=model.utils_plot.build_plot_title("Frequency Distribution", p),
                 show=self._show
             )
         if "two_radius" in plot_list:
-            model.utils.plot_two_radius_vs_radius(
+            model.utils_plot.plot_two_radius_vs_radius(
                 self.rg_list, self.two_rg_list,
-                filters=p, title=model.utils.build_plot_title("Two-RG vs RG", p),
+                filters=p, title=model.utils_plot.build_plot_title("Two-RG vs RG", p),
                 show=self._show
             )
         if "s_over_time" in plot_list:
-            model.utils.plot_S_over_time_from_df(
+            model.utils_plot.plot_S_over_time_from_df(
                 self.all_s_over_time, filters=p, bins_per_decade=10,
-                title=model.utils.build_plot_title("S over time", p),
+                title=model.utils_plot.build_plot_title("S over time", p),
                 show=self._show
             )
         if "rg_over_time" in plot_list:
-            model.utils.plot_r_gyr_over_time_from_df(
+            model.utils_plot.plot_r_gyr_over_time_from_df(
                 self.all_rg_over_time, filters=p, bins_per_decade=10,
-                title=model.utils.build_plot_title("Radius of Gyration over time", p),
+                title=model.utils_plot.build_plot_title("Radius of Gyration over time", p),
                 show=self._show
             )
         if "aggregate_grid" in plot_list:
             if self.aggregate_grid is not None:
                 pg_with_n = {**pg, "u_n": self.aggregate_grid_user_count}
-                model.utils.plot_aggregate_grid(
+                model.utils_plot.plot_aggregate_grid(
                     self.aggregate_grid, filters=pg_with_n,
-                    title=model.utils.build_plot_title("Aggregate Grid", pg_with_n),
+                    title=model.utils_plot.build_plot_title("Aggregate Grid", pg_with_n),
                     mask_center= p["grid"] and not p.get("random_start", False),
                     show=self._show
                 )
@@ -789,9 +779,9 @@ class Simulation:
             if self.batch_grids:
                 for batch_id, grid, batch_user_count in self.batch_grids:
                     pg_with_n = {**pg, "u_n": batch_user_count}
-                    model.utils.plot_aggregate_grid(
+                    model.utils_plot.plot_aggregate_grid(
                         grid, filters=pg_with_n,
-                        title=model.utils.build_plot_title(f"Grid - {batch_id}", pg_with_n),
+                        title=model.utils_plot.build_plot_title(f"Grid - {batch_id}", pg_with_n),
                         batch_id=batch_id,
                         mask_center= p["grid"] and not p.get("random_start", False),
                         show=self._show
@@ -800,10 +790,10 @@ class Simulation:
                 logger.warning("No batch-level aggregate grids available to plot.")
         if "batch_stats" in plot_list:
             if self.batch_stats_list:
-                model.utils.print_batch_stats(
+                model.utils_plot.print_batch_stats(
                     self.batch_stats_list,
                     filters=pg,
-                    title=model.utils.build_plot_title("Batch Stats", pg),
+                    title=model.utils_plot.build_plot_title("Batch Stats", pg),
                 )
             else:
                 logger.warning("No batch stats available to print.")

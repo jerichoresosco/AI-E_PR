@@ -345,29 +345,31 @@ def compute_gini_coefficient(visit_counts):
     return (1.0 / n) * (n + 1 - 2.0 * weighted_sum / total)
 
 
-def compute_individual_gini(venue_history_df):
+def compute_individual_gini(venue_history_df_list):
     """
-    Compute the individual Gini coefficient for a single user.
+    Compute the individual Gini coefficient for a list of users.
 
     Applies :func:`compute_gini_coefficient` to the per-venue visit counts
-    recorded in the user's venue history (Equation 1 in Pedreschi et al.,
-    restricted to the visits made by this user).
+    recorded in each user's venue history (Equation 1 in Pedreschi et al.,
+    restricted to the visits made by each user).
 
     Parameters
     ----------
-    venue_history_df : pd.DataFrame
-        User venue history with at least a 'Number of visits' column.
+    venue_history_df_list : list of pd.DataFrame
+        List of DataFrames containing venue history for each user, with at least a 'Number of visits' column.
 
     Returns
     -------
     float
         Individual Gini coefficient in [0, 1].
     """
-    visit_counts = venue_history_df["Number of visits"].values
-    return compute_gini_coefficient(visit_counts)
+
+    values = [compute_gini_coefficient(df['Number of visits'].values) for df in venue_history_df_list]
+    mean = sum(values) / len(values)
+    return mean
 
 
-def compute_collective_gini(collective_venue_counts):
+def compute_collective_gini(venue_history_df_list):
     """
     Compute the collective Gini coefficient over the entire dataset.
 
@@ -377,14 +379,21 @@ def compute_collective_gini(collective_venue_counts):
 
     Parameters
     ----------
-    collective_venue_counts : dict
-        Mapping {venue_name: total_visit_count} aggregated across all users.
+    venue_history_df_list : list of pd.DataFrame
+        List of DataFrames containing venue history for each user, with at least a 'Number of visits' column.
 
     Returns
     -------
     float
         Collective Gini coefficient in [0, 1].
     """
+
+    #First compute the aggregate visit counts per venue across all users
+    collective_venue_counts = (pd.concat(venue_history_df_list)
+                    .groupby("Venue_name")["Number of visits"]
+                    .sum()
+                    .to_dict())
+
     visit_counts = list(collective_venue_counts.values())
     return compute_gini_coefficient(visit_counts)
 
