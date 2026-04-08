@@ -552,6 +552,7 @@ class Simulation:
         gini_ind = model.utils.compute_individual_gini(venue_history_df_list) 
         # Collective Gini coefficient 
         gini_coll = model.utils.compute_collective_gini(venue_history_df_list)
+            
         batch_stats_df = pd.DataFrame([
             {"metric": "gini_collective",     "value": gini_coll},
             {"metric": "gini_individual",     "value": gini_ind},
@@ -559,12 +560,16 @@ class Simulation:
             #{"metric": "n_venues_collective", "value": float(len(collective_venue_counts))},
             #collective_venue_counts is now inside the compute_collective_gini function, and its length is not returned.
         ])
+
+        if analyse_params.get("grid", False):
+            batch_grid, _ = model.utils.compute_and_save_aggregate_grid(analysis_folder)
+            moran_i_dict = model.utils.compute_moran_i(batch_grid)
+            moran_df = pd.DataFrame([{"metric": k, "value": v} for k, v in moran_i_dict.items()])
+            batch_stats_df = pd.concat([batch_stats_df, moran_df], ignore_index=True)
+
         batch_stats_df.to_parquet(
             os.path.join(analysis_folder, "batch_stats.parquet"), index=False
         )
-
-        if analyse_params.get("grid", False):
-            model.utils.compute_and_save_aggregate_grid(analysis_folder)
 
         logger.info(f"Analysis data saved to: {analysis_folder}")
 

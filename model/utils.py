@@ -5,6 +5,8 @@ from matplotlib.colors import LogNorm
 import os
 import inspect
 import scipy.stats
+from libpysal.weights import lat2W
+from esda.moran import Moran
 
 import logging
 logger = logging.getLogger(__name__)
@@ -754,6 +756,14 @@ def compute_and_save_aggregate_grid(analysis_folder):
     analysis_folder : str
         Path to the timestamped batch run folder produced by run_analysis()
         (e.g. analysis_data/ro_0.1_.../20260310_160442_960747/).
+
+    Returns
+    -------
+    batch_agg : pd.DataFrame
+        The batch-level aggregate grid (sum over all users in analysis_folder).
+    param_agg : pd.DataFrame or None
+        The param-level aggregate grid (sum over all batch aggregates in the
+        parent param folder). None if no batch aggregates were found.
     """
     # --- batch-level aggregate ---
     grid_sum = None
@@ -794,6 +804,7 @@ def compute_and_save_aggregate_grid(analysis_folder):
         param_agg.to_parquet(os.path.join(param_folder, "aggregate_grid.parquet"), index=False)
         logger.info(f"Param-level aggregate grid saved to: {param_folder}")
 
+    return batch_agg, param_agg
 
 def load_all_aggregate_grids(filters):
     """
@@ -945,4 +956,71 @@ def load_all_batch_stats(filters):
     logger.info(f"Loaded batch stats for {len(batch_stats_list)} batch(es) from: {param_folder}")
     return batch_stats_list
 
-
+def compute_moran_i(batch_agg):
+    """
+    Compute Moran's I spatial autocorrelation statistic on a batch aggregate
+    grid, using esda (PySAL) with a rook-contiguity spatial weights matrix.
+ 
+    Parameters
+    ----------
+    batch_agg : pd.DataFrame
+        Batch-level aggregate grid as returned by compute_and_save_aggregate_grid().
+        Columns are expected to be strings (as saved to Parquet); they are
+        converted internally to a numeric numpy array before computation.
+        The grid must be square (n x n).
+ 
+    Returns
+    -------
+    dict with keys:
+        "I"       : float - Moran's I statistic.
+                            > E_I  → spatial clustering of similar visit counts.
+                            < E_I  → spatial dispersion (checkerboard pattern).
+                            ≈ E_I  → spatial randomness.
+        "E_I"     : float - Expected value under complete spatial randomness:
+                            -1 / (N - 1), where N is the number of cells.
+        "z_score" : float - Standardised z-score under normality assumption.
+        "p_value" : float - Two-tailed p-value for the null hypothesis of
+                            complete spatial randomness.
+ 
+    Raises
+    ------
+    ValueError
+        If the grid is not square, or if all cells share the same visit count
+        (variance zero, Moran's I undefined).
+ 
+    Notes
+    -----
+    Spatial weights: binary rook contiguity (4-neighbours: N, S, E, W),
+    row-standardised so each row sums to 1.  Built via libpysal.weights.lat2W.
+ 
+    The z-score and p-value are computed under the normality assumption
+    (esda.moran.Moran attributes z_norm / p_norm).
+    """
+    grid_matrix = batch_agg.values.astype(float)
+ 
+    if grid_matrix.ndim != 2 or grid_matrix.shape[0] != grid_matrix.shape[1]:
+        raise ValueError(
+            f"batch_agg must be a square 2-D grid, got shape {grid_matrix.shape}"
+        )
+ 
+    if np.var(grid_matrix) == 0.0:
+        raise ValueError(
+            "All cells have the same visit count: Moran's I is undefined."
+        )
+ 
+    n = grid_matrix.shape[0]
+    W = lat2W(n, n, rook=True)
+    W.transform = "r"
+ 
+    mi = Moran(grid_matrix.flatten(), W)
+ 
+    logger.info(
+        f"Moran's I={mi.I:.4f}  E[I]={mi.EI:.4f}  "
+        f"z={mi.z_norm:.3f}  p={mi.p_norm:.4f}"
+    )
+    return {
+        "I":       mi.I,
+        "E_I":     mi.EI,
+        "z_score": mi.z_norm,
+        "p_value": mi.p_norm,
+    }
