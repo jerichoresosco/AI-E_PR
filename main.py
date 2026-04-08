@@ -18,7 +18,7 @@ def main():
     # Choose mode
     # ==========================================================
 
-    mode = "plot"    # Options:
+    mode = "plot"  # Options:
                         #   "simulate"             - run simulation, save raw_data only
                         #   "analyse"              - load raw_data, compute & save analysis_data
                         #   "simulate_and_analyse" - simulate then analyse without reloading from disk
@@ -33,11 +33,11 @@ def main():
         "gamma": 0.2,
         "a_param": 0.75,
         "b_param": 0.6,
-        "user_number": 500,
-        "time": 1000000,
-        "grid" : False,
+        "user_number": 300,
+        "time": 100000,
+        "grid" : True,
         "random_start": True,
-        "epr_fraction": 1,        # fraction of 'time' run with pure EPR before CF (1.0 = pure EPR; 0 < x < 1 enables CF phase)
+        "epr_fraction": 0.3,      # fraction of 'time' run with pure EPR before CF (1.0 = pure EPR; 0 < x < 1 enables CF phase)
         "top_k": 10,                # number of similar neighbors used in CF phase
     }
 
@@ -59,7 +59,7 @@ def main():
         "gamma": 0.2,
         "a_param": 0.75,
         "b_param": 0.6,
-        "time": 100000,
+        "time": 1000000,
         "grid" : True
     }
 
@@ -75,9 +75,9 @@ def main():
         "b_param": 0.6,
         "time": 1000000,
         "user_number": 500,       #For correct displaying
-        "grid": True,
+        "grid": False,
         "random_start": True,      # must match the simulate_params value used
-        "epr_fraction": 0.3,      
+        "epr_fraction": 1,      
     }
 
     plot_list = [
@@ -85,11 +85,11 @@ def main():
         #"rg_distribution", #checked but still double plot
         #"freq_distribution", 
         #"two_radius", 
-        "s_over_time", 
-        "rg_over_time",
+        #"s_over_time", 
+        #"rg_over_time",
         #"aggregate_grid",   
         #"batch_grid",  ##Problems in saving due to max lenght titole 260 characters
-        #"batch_stats"     
+        "batch_stats"     
     ]
 
     show = False #if True only shows the plots, if False only saves them to disk

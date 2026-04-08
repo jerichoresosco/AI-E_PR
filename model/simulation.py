@@ -110,6 +110,8 @@ class Simulation:
         self._simulate_params = simulate_params
         self.grid_exists      = grid_exists
         self._random_start    = random_start
+        # Reset per-run check folder so each call to run() gets its own batch subfolder
+        self._check_run_dir   = None
 
         if grid_exists == True:
             self._grid_params = grid_params
@@ -173,7 +175,7 @@ class Simulation:
                     f"CF interval {interval + 1}/{n_intervals}: "
                     f"rebuilding similarities, running [{t_start:.1f}, {t_end:.1f}]..."
                 )
-                cf_neighbors_list = self._build_cf_data(top_k)
+                cf_neighbors_list = self._build_cf_data(top_k, interval_idx=interval)
 
                 for i, user in enumerate(self.users_list):
                     neighbors = cf_neighbors_list[i]
@@ -192,7 +194,7 @@ class Simulation:
                 if last_row[state_idx] == "E":
                     user.venue_history.pop()
 
-    def _build_cf_data(self, top_k):
+    def _build_cf_data(self, top_k, interval_idx=0):
         """
         Build cosine-similarity-based top-k neighbor lists for every user.
 
@@ -200,11 +202,18 @@ class Simulation:
         self.users_list, computes pairwise cosine similarities, and returns for
         each user a ranked list of the most similar neighbors.
 
+        Files are written to a per-run subfolder inside check/ whose name mirrors
+        the analysis_data folder convention (params + batch timestamp), so every
+        run is kept separate and can be traced back to its simulation parameters.
+
         Parameters
         ----------
         top_k : int
             Maximum number of neighbors to retain per user.
             If fewer users have positive similarity, all of them are kept.
+        interval_idx : int, optional (default=0)
+            0-based index of the current CF interval, forwarded to the
+            similarity-distribution plot so each interval gets its own file.
 
         Returns
         -------
@@ -245,15 +254,58 @@ class Simulation:
         sim_matrix = uv_norm @ uv_norm.T
         np.fill_diagonal(sim_matrix, 0.0)
 
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        root_dir = os.path.dirname(current_dir)
-        check_dir = os.path.join(root_dir, "check")
-        os.makedirs(check_dir, exist_ok=True)
+        # ------------------------------------------------------------------
+        # Build the check subfolder:
+        #   check/
+        #     ro_{ro}_gamma_{gamma}_a_{a}_b_{b}_time_{time}[_clen_X_cnum_Y][_rstart_yes][_efrac_Z]/
+        #       {batch_timestamp}/
+        #           sim_matrix_interval_{N}.txt
+        #           neighbors_interval_{N}.txt
+        #           neighbor_sim_dist_interval_{N}.pdf
+        # ------------------------------------------------------------------
+        root_dir   = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        check_base = os.path.join(root_dir, "check")
 
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        # Build the param-folder name using the same convention as _make_run_folder
+        p = self._simulate_params
+        efrac_suffix  = (
+            f"_efrac_{p['epr_fraction']}"
+            if p.get("epr_fraction", 1.0) < 1.0
+            else ""
+        )
+        if self.grid_exists and getattr(self, "_grid_params", None) is not None:
+            gp = self._grid_params
+            rstart_suffix = "_rstart_yes" if p.get("random_start", False) else ""
+            param_name = (
+                f"ro_{p['ro']}_gamma_{p['gamma']}"
+                f"_a_{p['a_param']}_b_{p['b_param']}_time_{p['time']}"
+                f"_clen_{gp['cell_lenght']}_cnum_{gp['cell_number']}"
+                f"{rstart_suffix}{efrac_suffix}"
+            )
+        else:
+            param_name = (
+                f"ro_{p['ro']}_gamma_{p['gamma']}"
+                f"_a_{p['a_param']}_b_{p['b_param']}_time_{p['time']}"
+                f"{efrac_suffix}"
+            )
 
-        np.savetxt(os.path.join(check_dir, f"sim_matrix_{ts}.txt"), sim_matrix, fmt='%.6f')
+        # Reuse (or create once) the batch timestamp folder for this run
+        if self._check_run_dir is None:
+            batch_ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            self._check_run_dir = os.path.join(check_base, param_name, batch_ts)
+            os.makedirs(self._check_run_dir, exist_ok=True)
+            logger.info(f"Check folder for this run: {self._check_run_dir}")
 
+        check_run_dir = self._check_run_dir
+        interval_label = interval_idx + 1   # 1-based for file names
+
+        # Save sim_matrix
+        sim_matrix_path = os.path.join(
+            check_run_dir, f"sim_matrix_interval_{interval_label:02d}.txt"
+        )
+        np.savetxt(sim_matrix_path, sim_matrix, fmt="%.6f")
+
+        # Build neighbor lists
         top_k_actual = min(top_k, n_users - 1)
         cf_neighbors = []
         for ui in range(n_users):
@@ -264,7 +316,6 @@ class Simulation:
                 continue
             pos_indices = np.where(pos_mask)[0]
             if len(pos_indices) > top_k_actual:
-                # Keep the top_k_actual most similar
                 pos_indices = pos_indices[np.argsort(sims[pos_indices])[::-1]][:top_k_actual]
             else:
                 pos_indices = pos_indices[np.argsort(sims[pos_indices])[::-1]]
@@ -272,13 +323,25 @@ class Simulation:
                 [(self.users_list[j], float(sims[j])) for j in pos_indices]
             )
 
-        with open(os.path.join(check_dir, f"neighbors_{ts}.txt"), "w") as f:
+        # Save neighbors file
+        neighbors_path = os.path.join(
+            check_run_dir, f"neighbors_interval_{interval_label:02d}.txt"
+        )
+        with open(neighbors_path, "w") as f:
             for row in cf_neighbors:
                 f.write(",".join(map(str, row)) + "\n")
 
+        # Plot similarity distribution for this interval
+        model.utils.plot_cf_neighbor_similarity_distribution(
+            cf_neighbors,
+            check_run_dir=check_run_dir,
+            interval_idx=interval_idx,
+            top_n_ranks=3,
+        )
+
         logger.info(
             f"CF neighbor data built: {n_users} users, {n_venues} unique venues, "
-            f"top_k={top_k_actual}"
+            f"top_k={top_k_actual}, interval={interval_label}"
         )
         return cf_neighbors
 
@@ -455,13 +518,13 @@ class Simulation:
             rg_over_time_df = model.utils.compute_rg_over_time(user_history_df)
             s_over_time_df  = model.utils.compute_s_over_time(user_history_df)
 
-            # --- Individual Gini coefficient ---
+            # Individual Gini coefficient
             gini_ind = model.utils.compute_individual_gini(venue_history_df)
             gini_row = pd.DataFrame([{"metric": "gini_individual", "value": gini_ind}])
             stats_df = pd.concat([stats_df, gini_row], ignore_index=True)
             gini_ind_arr = np.append(gini_ind_arr, gini_ind)
 
-            # --- Accumulate venue counts for collective Gini ---
+            # Accumulate venue counts for collective Gini
             for _, row in venue_history_df.iterrows():
                 venue  = row["Venue_name"]
                 visits = row["Number of visits"]
