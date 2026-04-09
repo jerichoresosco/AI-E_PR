@@ -2,6 +2,7 @@ import numpy as np
 import model.user
 import model.utils
 import model.utils_plot
+import model.grid
 import pandas as pd
 import os
 from datetime import datetime
@@ -28,6 +29,20 @@ class Simulation:
                                             grid_params optional: cell_lenght, cell_number
         load_analysis_data(plot_params)     requires ro, gamma, a_param, b_param, time, [user_number]
         plot(plot_list)
+
+    Additional entry points for chained simulations:
+        resume(simulate_params, grid_params)
+            Continue a simulation on users already loaded in memory (self.users_list must be
+            populated either by run() or by _reconstruct_users_from_raw()).
+            simulate_params["time"] is interpreted as the *new* absolute clock target: users
+            will run until their clock reaches this value.
+
+        _reconstruct_users_from_raw(load_params, grid_params)
+            Load a specific raw_data batch from disk and rebuild live User objects from
+            the saved Parquet files, so that resume() can continue the simulation.
+            load_params extends the standard parameter dict with:
+                "batch_id" (str, optional) : timestamp folder name to load.
+                    When absent, the most-recent batch is used automatically.
     """
 
     def __init__(self):
@@ -66,6 +81,7 @@ class Simulation:
 
         #Selecting saveplot or showplot
         self._show = None
+
     # ==========================================================================
     # PHASE 1: SIMULATE
     # ==========================================================================
@@ -183,9 +199,6 @@ class Simulation:
                     while user.clock < t_end:
                         user.make_decision_cf(neighbors)
 
-        # -----------------------------------------------------------------------
-        # Trim: remove the last record if it pushed the clock past the time limit
-        # -----------------------------------------------------------------------
         for user in self.users_list:
             header    = user.user_history[0]
             clock_idx = header.index("Clock")
@@ -195,6 +208,392 @@ class Simulation:
                 if last_row[state_idx] == "E":
                     user.venue_history.pop()
 
+    def resume(self, simulate_params, grid_params=None):
+        """
+        Continue the simulation on users already in self.users_list.
+
+        Users are advanced until their clock reaches simulate_params["time"],
+        which is interpreted as an *absolute* target clock, not an additional
+        duration.  This means the value should be larger than the clock values
+        the users already carry (i.e. the end-time of the previous run phase).
+
+        Supports the same EPR / EPR+CF logic as run():
+          - epr_fraction == 1.0  →  pure EPR for the whole resume window
+          - epr_fraction <  1.0  →  EPR up to (epr_fraction * extra_time), then CF
+
+        where extra_time = simulate_params["time"] - mean clock of users at entry.
+
+        This method updates self._simulate_params so that save_raw_data() and
+        run_analysis() will use the new parameters (including the new "time")
+        for folder naming.
+
+        Parameters
+        ----------
+        simulate_params : dict
+            Must contain: "ro", "gamma", "a_param", "b_param", "time".
+            Optional: "epr_fraction" (float, default 1.0), "top_k" (int, default 10).
+            "user_number" is ignored: all users already in memory are continued.
+        grid_params : dict, optional
+            When the simulation uses a grid, must contain "cell_lenght" and
+            "cell_number".  When None (default) self._grid_params is reused
+            if it exists.
+        """
+        if not self.users_list:
+            raise RuntimeError(
+                "resume() called but self.users_list is empty. "
+                "Call run() or _reconstruct_users_from_raw() first."
+            )
+
+        ro           = simulate_params["ro"]
+        gamma        = simulate_params["gamma"]
+        a_param      = simulate_params["b_param"]   # kept for symmetry; not used in loop
+        b_param      = simulate_params["b_param"]
+        time_target  = simulate_params["time"]
+        epr_fraction = simulate_params.get("epr_fraction", 1.0)
+        top_k        = simulate_params.get("top_k", 10)
+
+        self.ro               = ro
+        self.gamma            = gamma
+        self._simulate_params = simulate_params
+        self._check_run_dir   = None   # new check subfolder
+
+        # Resolve grid_params
+        if grid_params is not None:
+            self._grid_params     = grid_params
+            self.grid_cell_lenght = grid_params["cell_lenght"]
+            self.grid_cell_number = grid_params["cell_number"]
+        elif getattr(self, "_grid_params", None) is not None:
+            grid_params = self._grid_params  # reuse from previous run cause it must match the loaded state
+
+        n_users   = len(self.users_list)
+        milestone = max(1, n_users // 10)
+
+
+        ##PER ORA LO LASCIO COSì: Si introduce un artificio nello scorrimento del tempo, 
+        ##Da verificare se è problematico o no
+        # Compute the effective start of this resume window from the users' clocks
+        current_clocks = [u.clock for u in self.users_list]
+        resume_start   = sum(current_clocks) / n_users   # approximate; each user may differ
+        extra_time     = time_target - resume_start
+
+        if extra_time <= 0:
+            logger.warning(
+                f"resume() called but time_target={time_target} is not larger than "
+                f"the current mean user clock ({resume_start:.1f}). Nothing to do."
+            )
+            return
+
+        logger.info(
+            f"Resuming simulation: {n_users} users, "
+            f"clock range [{min(current_clocks):.1f}, {max(current_clocks):.1f}] "
+            f"→ target={time_target}, epr_fraction={epr_fraction}"
+        )
+
+        if epr_fraction == 1.0:
+            # ---------------------------------------------------------------
+            # Pure EPR resume
+            # ---------------------------------------------------------------
+            for i, user in enumerate(self.users_list):
+                while user.clock < time_target:
+                    user.make_decision()
+                if (i + 1) % milestone == 0 or (i + 1) == n_users:
+                    pct = ((i + 1) / n_users) * 100
+                    logger.info(f"Resume EPR progress: {pct:.0f}% ({i+1}/{n_users} users)")
+
+        else:
+            # ---------------------------------------------------------------
+            # EPR phase up to epr_fraction * extra_time, then CF
+            # ---------------------------------------------------------------
+            epr_end = resume_start + epr_fraction * extra_time
+
+            logger.info(f"Resume EPR phase: running to clock={epr_end:.1f}...")
+            for i, user in enumerate(self.users_list):
+                while user.clock < epr_end:
+                    user.make_decision()
+                if (i + 1) % milestone == 0 or (i + 1) == n_users:
+                    pct = ((i + 1) / n_users) * 100
+                    logger.info(f"Resume EPR progress: {pct:.0f}% ({i+1}/{n_users} users)")
+
+            # CF intervals
+            ##NEED MAIN IMPLEMENTATION!!!!
+            cf_updates   = 4
+            n_intervals  = cf_updates + 1
+            cf_duration  = time_target - epr_end
+            interval_len = cf_duration / n_intervals
+
+            for interval in range(n_intervals):
+                t_end = epr_end + (interval + 1) * interval_len
+                logger.info(
+                    f"Resume CF interval {interval + 1}/{n_intervals}: "
+                    f"rebuilding similarities, running to {t_end:.1f}..."
+                )
+                cf_neighbors_list = self._build_cf_data(top_k, interval_idx=interval)
+                for i, user in enumerate(self.users_list):
+                    neighbors = cf_neighbors_list[i]
+                    while user.clock < t_end:
+                        user.make_decision_cf(neighbors)
+
+        for user in self.users_list:
+            header    = user.user_history[0]
+            clock_idx = header.index("Clock")
+            state_idx = header.index("State(E/R)")
+            if len(user.user_history) > 1 and user.user_history[-1][clock_idx] > time_target:
+                last_row = user.user_history.pop()
+                if last_row[state_idx] == "E":
+                    user.venue_history.pop()
+
+        logger.info("Resume complete.")
+
+
+    def _reconstruct_users_from_raw(self, load_params, grid_params=None):
+        """
+        Load a raw_data batch from disk and reconstruct live User objects so that
+        resume() can continue the simulation from the saved state.
+
+        The method locates the correct parameter folder in raw_data/ using
+        load_params, then selects a specific batch sub-folder (by batch_id or
+        automatically the most recent one), reads the Parquet files for every
+        user, and rebuilds each User object in memory.
+
+        Reconstructed state per user
+        ----------------------------
+        - user_history     : full list-of-lists, header row prepended
+        - venue_history    : full list-of-lists, header row prepended
+        - _venue_index     : rebuilt from venue_history
+        - num_distinct_venues : len(venue_history) - 1
+        - clock            : last Clock value in user_history
+        - position         : (Destination_x_coord, Destination_y_coord) of last row
+        - previous_position: (Departure_x_coord, Departure_y_coord) of last row
+        - departure        : Departure field of last row
+        - state            : State(E/R) field of last row
+        - grid.matrix      : loaded from user_{i}_grid.parquet when grid is active
+        - simulation       : reference to self (re-attached here)
+
+        Parameters
+        ----------
+        load_params : dict
+            Standard simulation parameter keys: "ro", "gamma", "a_param",
+            "b_param", "time", "grid", "random_start" (optional).
+            Additional key:
+                "batch_id" (str, optional)
+                    Exact timestamp folder name to load (e.g. "20240601_120000_123456").
+                    When absent, the most-recent batch folder is selected automatically.
+        grid_params : dict, optional
+            Required when load_params["grid"] is True.
+            Must contain "cell_lenght" and "cell_number".
+            When None, self._grid_params is used if available.
+
+        Returns
+        -------
+        str
+            Path to the raw_data batch folder that was loaded, so it can be
+            passed to run_analysis() or save_raw_data() if needed.
+
+        Raises
+        ------
+        FileNotFoundError
+            When the parameter folder or the requested batch folder does not exist.
+        RuntimeError
+            When no batch folders are found inside the parameter folder.
+        """ 
+
+        # Resolve grid_params
+        if grid_params is not None:
+            self._grid_params     = grid_params
+            self.grid_cell_lenght = grid_params["cell_lenght"]
+            self.grid_cell_number = grid_params["cell_number"]
+
+        grid_exists  = load_params.get("grid", False)
+        random_start = load_params.get("random_start", False)
+        batch_id     = load_params.get("batch_id", None)
+
+        # ------------------------------------------------------------------
+        # Locate the parameter folder in raw_data/
+        # ------------------------------------------------------------------
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        base_folder  = os.path.join(project_root, "raw_data")
+
+        efrac = load_params.get("epr_fraction", 1.0)
+        efrac_suffix  = f"_efrac_{efrac}" if efrac < 1.0 else ""
+
+        if grid_exists and grid_params is not None:
+            rstart_suffix = "_rstart_yes" if random_start else ""
+            param_folder_name = (
+                f"ro_{load_params['ro']}_gamma_{load_params['gamma']}"
+                f"_a_{load_params['a_param']}_b_{load_params['b_param']}"
+                f"_time_{load_params['time']}"
+                f"_clen_{grid_params['cell_lenght']}_cnum_{grid_params['cell_number']}"
+                f"{rstart_suffix}{efrac_suffix}"
+            )
+        else:
+            param_folder_name = (
+                f"ro_{load_params['ro']}_gamma_{load_params['gamma']}"
+                f"_a_{load_params['a_param']}_b_{load_params['b_param']}"
+                f"_time_{load_params['time']}"
+                f"{efrac_suffix}"
+            )
+
+        param_folder = os.path.join(base_folder, param_folder_name)
+        if not os.path.exists(param_folder):
+            raise FileNotFoundError(
+                f"_reconstruct_users_from_raw: parameter folder not found:\n  {param_folder}"
+            )
+
+        # ------------------------------------------------------------------
+        # Select the batch sub-folder
+        # ------------------------------------------------------------------
+        if batch_id is not None:
+            run_folder = os.path.join(param_folder, batch_id)
+            if not os.path.exists(run_folder):
+                raise FileNotFoundError(
+                    f"_reconstruct_users_from_raw: requested batch_id not found:\n  {run_folder}"
+                )
+        else:
+            # Pick the most-recent batch
+            candidates = sorted(
+                d for d in os.listdir(param_folder)
+                if os.path.isdir(os.path.join(param_folder, d))
+            )
+            if not candidates:
+                raise RuntimeError(
+                    f"_reconstruct_users_from_raw: no batch folders found in:\n  {param_folder}"
+                )
+            run_folder = os.path.join(param_folder, candidates[-1])
+            logger.info(
+                f"batch_id not specified — using most recent batch: {candidates[-1]}"
+            )
+
+        logger.info(f"Reconstructing users from: {run_folder}")
+
+        # ------------------------------------------------------------------
+        # Discover how many users are in this batch
+        # ------------------------------------------------------------------
+        user_indices = sorted(
+            int(fname[len("user_"):-len("_history.parquet")])
+            for fname in os.listdir(run_folder)
+            if fname.startswith("user_") and fname.endswith("_history.parquet")
+        )
+        if not user_indices:
+            raise RuntimeError(
+                f"_reconstruct_users_from_raw: no user_*_history.parquet files in:\n  {run_folder}"
+            )
+
+        # ------------------------------------------------------------------
+        # Restore simulation-level attributes needed by User objects
+        # ------------------------------------------------------------------
+        self.ro          = load_params["ro"]
+        self.gamma       = load_params["gamma"]
+        self.a_param     = load_params["a_param"]
+        self.grid_exists = grid_exists
+        self._random_start = random_start
+
+        if grid_exists and grid_params is not None:
+            self.grid_cell_lenght = grid_params["cell_lenght"]
+            self.grid_cell_number = grid_params["cell_number"]
+
+        self.users_list = []
+        n_users   = len(user_indices)
+        milestone = max(1, n_users // 10)
+
+        history_header = [
+            "State(E/R)", "Departure",
+            "Departure_x_coord", "Departure_y_coord",
+            "Destination", "Destination_x_coord", "Destination_y_coord",
+            "Distance", "Angle", "Delta_t", "Clock",
+        ]
+        venue_header = ["Venue_name", "Number of visits", "Venue_x_coord", "Venue_y_coord"]
+
+        for pos, i in enumerate(user_indices):
+            h_path = os.path.join(run_folder, f"user_{i}_history.parquet")
+            v_path = os.path.join(run_folder, f"user_{i}_venue.parquet")
+            g_path = os.path.join(run_folder, f"user_{i}_grid.parquet")
+
+            history_df = pd.read_parquet(h_path)
+            venue_df   = pd.read_parquet(v_path) if os.path.exists(v_path) else None
+
+            # Rebuild history as list-of-lists (matching the live format)
+            user_history  = [history_header] + history_df.values.tolist()
+            venue_history = [venue_header]
+            if venue_df is not None:
+                venue_history += venue_df.values.tolist()
+
+            # Last row of history → current state
+            last = user_history[-1]
+            col  = {name: idx for idx, name in enumerate(history_header)}
+
+            last_clock    = last[col["Clock"]]
+            last_position = (last[col["Destination_x_coord"]], last[col["Destination_y_coord"]])
+            last_prev_pos = (last[col["Departure_x_coord"]],   last[col["Departure_y_coord"]])
+            last_departure= last[col["Departure"]]
+            last_state    = last[col["State(E/R)"]]
+
+            # Rebuild _venue_index: venue_name → row index in venue_history
+            venue_index = {}
+            for row_idx, row in enumerate(venue_history[1:], start=1):
+                venue_index[row[0]] = row_idx
+
+            # ------------------------------------------------------------------
+            # Build a minimal User object *without* calling first_exploration()
+            # We achieve this by calling __new__ and populating attributes manually
+            # ------------------------------------------------------------------
+            user = model.user.User.__new__(model.user.User)
+            user.uid          = f"User_{i}"
+            user.a_param      = load_params["a_param"]
+            user.b_param      = load_params["b_param"]
+            user.simulation   = self
+
+            user.has_grid = grid_exists
+            if grid_exists and os.path.exists(g_path):
+                grid_df = pd.read_parquet(g_path)
+                g = model.grid.Grid.__new__(model.grid.Grid)
+                g.cell_lenght    = grid_params["cell_lenght"]
+                g.cell_number    = grid_params["cell_number"]
+                g.spatial_center = (g.cell_lenght * g.cell_number) / 2
+                g.matrix         = grid_df.values.astype(int)
+                user.grid = g
+            elif grid_exists:
+                logger.warning(f"User_{i}: grid.parquet not found, creating fresh grid.")
+                user.grid = model.grid.Grid(
+                    cell_lenght=grid_params["cell_lenght"],
+                    cell_number=grid_params["cell_number"],
+                )
+
+            user.user_history       = user_history
+            user.venue_history      = venue_history
+            user._venue_index       = venue_index
+            user.num_distinct_venues= len(venue_history) - 1
+
+            user.clock              = last_clock
+            user.position           = last_position
+            user.previous_position  = last_prev_pos
+            user.departure          = last_departure
+            user.state              = last_state
+
+            # Transient movement attributes (not needed to resume, but must exist)
+            user.next_position      = None
+            user.destination        = None
+            user.previous_destination = None
+            user.next_venue_return  = None
+            user.delta_r            = None
+            user.angle              = None
+            user.delta_t            = None
+            user.r_cm               = None
+            user.r_gyr              = None
+            user.stats              = [["metric", "value"]]
+            user._row_index         = None
+
+            self.users_list.append(user)
+
+            if (pos + 1) % milestone == 0 or (pos + 1) == n_users:
+                pct = ((pos + 1) / n_users) * 100
+                logger.info(f"Reconstruction progress: {pct:.0f}% ({pos+1}/{n_users} users)")
+
+        logger.info(
+            f"Reconstructed {n_users} users from batch: {os.path.basename(run_folder)}"
+        )
+        return run_folder
+
+    #I'll bring it in a separate folder!!!
     def _build_cf_data(self, top_k, interval_idx=0):
         """
         Build cosine-similarity-based top-k neighbor lists for every user.

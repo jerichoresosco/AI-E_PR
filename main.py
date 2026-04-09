@@ -18,11 +18,13 @@ def main():
     # Choose mode
     # ==========================================================
 
-    mode = "plot"  # Options:
+    mode = "load_simulate_analyse"  # Options:
                         #   "simulate"             - run simulation, save raw_data only
                         #   "analyse"              - load raw_data, compute & save analysis_data
                         #   "simulate_and_analyse" - simulate then analyse without reloading from disk
                         #   "plot"                 - load analysis_data and plot
+                        #   "load_simulate"        - load a raw_data batch, continue simulation, save raw_data
+                        #   "load_simulate_analyse"- load a raw_data batch, continue simulation, analyse and save
 
     # ----------------------------------------------------------
     # simulate_params -- used only in "simulate" and
@@ -37,7 +39,7 @@ def main():
         "time": 10000,
         "grid" : True,
         "random_start": True,
-        "epr_fraction": 0.3,      # fraction of 'time' run with pure EPR before CF (1.0 = pure EPR; 0 < x < 1 enables CF phase)
+        "epr_fraction": 0,      # fraction of 'time' run with pure EPR before CF (1.0 = pure EPR; 0 < x < 1 enables CF phase)
         "top_k": 10,                # number of similar neighbors used in CF phase
     }
 
@@ -78,6 +80,52 @@ def main():
         "grid": True,
         "random_start": True,      # must match the simulate_params value used
         "epr_fraction": 0.3,      
+    }
+
+    # ----------------------------------------------------------
+    # load_params -- used in "load_simulate" and
+    # "load_simulate_analyse" modes.
+    #
+    # Identifies WHICH existing raw_data batch to load as the
+    # starting point.  Must match the parameters used when that
+    # batch was originally saved.
+    #
+    # "batch_id" (optional): exact timestamp folder to load,
+    #     e.g. "20240601_153012_004321".
+    #     When absent the most recent batch is selected automatically.
+    # ----------------------------------------------------------
+    load_params = {
+        "ro": 0.1,
+        "gamma": 0.2,
+        "a_param": 0.75,
+        "b_param": 0.6,
+        "time": 10000,            # time of the ORIGINAL simulation to load
+        "grid": True,
+        "random_start": True,
+        # "epr_fraction": 0.3,   # include only if the original run used CF
+        # "batch_id": "20240601_153012_004321",  # omit to use the most recent batch
+    }
+
+    # ----------------------------------------------------------
+    # resume_params -- used in "load_simulate" and
+    # "load_simulate_analyse" modes.
+    #
+    # Defines HOW to continue the simulation after loading.
+    # "time" is the NEW absolute clock target (must be > the
+    # clock values stored in the loaded batch).
+    # Other parameters (ro, gamma, a_param, b_param) can differ
+    # from the original run to experiment with changed dynamics.
+    # ----------------------------------------------------------
+    resume_params = {
+        "ro": 0.1,
+        "gamma": 0.2,
+        "a_param": 0.75,
+        "b_param": 0.6,
+        "time": 20000,            # absolute target: users will run until clock=20000
+        "grid": True,
+        "random_start": True,
+        "epr_fraction": 1.0,      # 1.0 = pure EPR resume; <1.0 = EPR then CF
+        "top_k": 10,
     }
 
     plot_list = [
@@ -133,9 +181,54 @@ def main():
         simulation.load_analysis_data(plot_params, grid_params=grid_params, plot_list=plot_list)
         simulation.plot(plot_list, show=show)
 
+    # ==========================================================
+    # MODE 5: LOAD + SIMULATE (no analysis)
+    #
+    # Loads an existing raw_data batch, reconstructs User objects,
+    # continues the simulation with resume_params, then saves the
+    # extended trajectories as a new raw_data batch.
+    #
+    # Typical use-case: branch from a shared EPR baseline and run
+    # one variant (e.g. pure EPR extension) without re-simulating
+    # from scratch.
+    # ==========================================================
+    elif mode == "load_simulate":
+
+        simulation = model.simulation.Simulation()
+
+        # Reconstruct User objects from the chosen raw_data batch
+        simulation._reconstruct_users_from_raw(load_params, grid_params=grid_params)
+
+        # Continue the simulation with the new parameters
+        simulation.resume(resume_params, grid_params=grid_params)
+
+        # Save the extended trajectories as a new raw_data batch
+        simulation.save_raw_data()
+
+    # ==========================================================
+    # MODE 6: LOAD + SIMULATE + ANALYSE
+    #
+    # Same as MODE 5 but also runs analysis immediately after,
+    # without re-reading from disk (in-memory chaining).
+    # ==========================================================
+    elif mode == "load_simulate_analyse":
+
+        simulation = model.simulation.Simulation()
+
+        # Reconstruct User objects from the chosen raw_data batch
+        simulation._reconstruct_users_from_raw(load_params, grid_params=grid_params)
+
+        # Continue the simulation with the new parameters
+        simulation.resume(resume_params, grid_params=grid_params)
+
+        # Save extended raw trajectories and immediately run analysis
+        raw_run_folder = simulation.save_raw_data()
+        simulation.run_analysis(resume_params, raw_run_folder=raw_run_folder, grid_params=grid_params)
+
     else:
         raise ValueError(
-            "Invalid mode. Use: 'simulate', 'analyse', 'simulate_and_analyse', or 'plot'"
+            "Invalid mode. Use: 'simulate', 'analyse', 'simulate_and_analyse', "
+            "'plot', 'load_simulate', or 'load_simulate_analyse'"
         )
 
     elapsed = time.time() - start_time
