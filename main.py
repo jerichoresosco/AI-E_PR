@@ -12,6 +12,31 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 
+##Problems: Double saving on raw folder, ad also this error message: 2026-04-09 12:35:09 - model.simulation - INFO - Save progress: 10% (3/30 users saved)
+#2026-04-09 12:35:09 - model.simulation - INFO - Save progress: 20% (6/30 users saved)
+#2026-04-09 12:35:09 - model.simulation - INFO - Save progress: 30% (9/30 users saved)
+#Traceback (most recent call last):
+  #File "c:\Users\Jacopo\Desktop\Tesi_Magistrale_AKA_La_Fine\AI-E_PR\main.py", line 242, in <module>
+  #  main()
+  #File "c:\Users\Jacopo\Desktop\Tesi_Magistrale_AKA_La_Fine\AI-E_PR\main.py", line 225, in main
+  #  raw_run_folder = simulation.save_combined_raw_data()
+  #File "c:\Users\Jacopo\Desktop\Tesi_Magistrale_AKA_La_Fine\AI-E_PR\model\simulation.py", line 851, in save_combined_raw_data
+  #  user_df.to_parquet( os.path.join(run_folder, f"user_{i}_history.parquet"), index=False)
+ # File "C:\Users\Jacopo\miniconda3\envs\GSA\lib\site-packages\pandas\util\_decorators.py", line 207, in wrapper
+  #  return func(*args, **kwargs)
+  #File "C:\Users\Jacopo\miniconda3\envs\GSA\lib\site-packages\pandas\core\frame.py", line 2835, in to_parquet
+  #  return to_parquet(
+  #File "C:\Users\Jacopo\miniconda3\envs\GSA\lib\site-packages\pandas\io\parquet.py", line 420, in to_parquet
+  #  impl.write(
+  #File "C:\Users\Jacopo\miniconda3\envs\GSA\lib\site-packages\pandas\io\parquet.py", line 176, in write
+  #    path_or_handle, handles, kwargs["filesystem"] = _get_path_or_handle(
+  #File "C:\Users\Jacopo\miniconda3\envs\GSA\lib\site-packages\pandas\io\parquet.py", line 102, in _get_path_or_handle
+  #    handles = get_handle(
+  #File "C:\Users\Jacopo\miniconda3\envs\GSA\lib\site-packages\pandas\io\common.py", line 795, in get_handle
+   # handle = open(handle, ioargs.mode)
+#FileNotFoundError: [Errno 2] No such file or directory: 'c:\\Users\\Jacopo\\Desktop\\Tesi_Magistrale_AKA_La_Fine\\AI-E_PR\\combined_raw_data\\ro_0.1_gamma_0.2_a_0.75_b_0.6_time_10000_clen_21_cnum_21_rstart_yes\\ro_0.1_gamma_0.2_a_0.75_b_0.6_time_20000_clen_21_cnum_21_rstart_yes\\20260409_123509_056420\\user_10_history.parquet'
+#PS C:\Users\Jacopo\Desktop\Tesi_Magistrale_AKA_La_Fine\AI-E_PR> 
+
 def main():
 
     # ==========================================================
@@ -39,7 +64,7 @@ def main():
         "time": 10000,
         "grid" : True,
         "random_start": True,
-        "epr_fraction": 0,      # fraction of 'time' run with pure EPR before CF (1.0 = pure EPR; 0 < x < 1 enables CF phase)
+        "epr_fraction": 0.3,      # fraction of 'time' run with pure EPR before CF (1.0 = pure EPR; 0 < x < 1 enables CF phase)
         "top_k": 10,                # number of similar neighbors used in CF phase
     }
 
@@ -202,8 +227,8 @@ def main():
         # Continue the simulation with the new parameters
         simulation.resume(resume_params, grid_params=grid_params)
 
-        # Save the extended trajectories as a new raw_data batch
-        simulation.save_raw_data()
+        # Save the extended trajectories under combined_raw_data/
+        simulation.save_combined_raw_data()
 
     # ==========================================================
     # MODE 6: LOAD + SIMULATE + ANALYSE
@@ -221,9 +246,12 @@ def main():
         # Continue the simulation with the new parameters
         simulation.resume(resume_params, grid_params=grid_params)
 
-        # Save extended raw trajectories and immediately run analysis
-        raw_run_folder = simulation.save_raw_data()
-        simulation.run_analysis(resume_params, raw_run_folder=raw_run_folder, grid_params=grid_params)
+        # Save extended raw trajectories under combined_raw_data/
+        raw_run_folder = simulation.save_combined_raw_data()
+
+        # Analyse and save under combined_analysis_data/
+        simulation.run_analysis(resume_params, raw_run_folder=raw_run_folder,
+                                grid_params=grid_params, combined=True)
 
     else:
         raise ValueError(

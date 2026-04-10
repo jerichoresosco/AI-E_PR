@@ -591,6 +591,11 @@ class Simulation:
         logger.info(
             f"Reconstructed {n_users} users from batch: {os.path.basename(run_folder)}"
         )
+
+        # Store so that save_combined_raw_data() and run_analysis() can build
+        # the two-level folder structure without the caller having to pass it again.
+        self._load_params = load_params
+
         return run_folder
 
     #I'll bring it in a separate folder!!!
@@ -797,11 +802,72 @@ class Simulation:
         logger.info(f"Raw data saved to: {run_folder}")
         return run_folder
 
+    def save_combined_raw_data(self):
+        """
+        Save raw trajectories for a chained simulation (load → resume) under
+        combined_raw_data/ using a two-level parameter folder structure that
+        makes the provenance explicit.
+
+        Folder layout
+        -------------
+        combined_raw_data/
+            <base_params>/          ← parameters of the loaded batch (load_params)
+                <resume_params>/    ← parameters of the resumed simulation (_simulate_params)
+                    {YYYYMMDD_HHMMSS_ffffff}/
+                        user_0_history.parquet
+                        user_0_venue.parquet
+                        [user_0_grid.parquet]
+
+        Must be called after _reconstruct_users_from_raw() and resume().
+
+        Returns
+        -------
+        str
+            Path to the timestamped run folder that was just created.
+        """
+        logger.info("Saving combined raw simulation data...")
+
+        if not hasattr(self, "_load_params") or self._load_params is None:
+            raise RuntimeError(
+                "save_combined_raw_data() requires _load_params to be set. "
+                "Call _reconstruct_users_from_raw() before this method."
+            )
+
+        gp = getattr(self, "_grid_params", None)
+        run_folder = self._make_combined_run_folder(
+            "combined_raw_data",
+            base_params   = self._load_params,
+            resume_params = self._simulate_params,
+            grid_params   = gp,
+        )
+
+        total     = len(self.users_list)
+        milestone = max(1, total // 10)
+
+        for i, user in enumerate(self.users_list):
+            user_df  = pd.DataFrame(user.user_history[1:],  columns=user.user_history[0])
+            venue_df = pd.DataFrame(user.venue_history[1:], columns=user.venue_history[0])
+
+            user_df.to_parquet( os.path.join(run_folder, f"user_{i}_history.parquet"), index=False)
+            venue_df.to_parquet(os.path.join(run_folder, f"user_{i}_venue.parquet"),   index=False)
+
+            if self.grid_exists:
+                grid_df = pd.DataFrame(user.grid.matrix)
+                grid_df.columns = grid_df.columns.astype(str)
+                grid_df.to_parquet(os.path.join(run_folder, f"user_{i}_grid.parquet"), index=False)
+
+            if (i + 1) % milestone == 0 or (i + 1) == total:
+                pct = ((i + 1) / total) * 100
+                logger.info(f"Save progress: {pct:.0f}% ({i+1}/{total} users saved)")
+
+        logger.info(f"Combined raw data saved to: {run_folder}")
+        return run_folder
+
     # ==========================================================================
     # PHASE 2: ANALYSIS
     # ==========================================================================
 
-    def run_analysis(self, analyse_params, raw_run_folder=None, grid_params=None):
+    def run_analysis(self, analyse_params, raw_run_folder=None, grid_params=None, combined=False):
         """
         Compute all analysis quantities from raw trajectory data and save them
         to analysis_data/.
@@ -890,7 +956,19 @@ class Simulation:
             # simulate_and_analyse: users in memory, raw folder still known
             raw_folders_to_lock.add(raw_run_folder)
 
-        if analyse_params["grid"] == True:
+        if combined:
+            if not hasattr(self, "_load_params") or self._load_params is None:
+                raise RuntimeError(
+                    "run_analysis(combined=True) requires _load_params to be set. "
+                    "Call _reconstruct_users_from_raw() before this method."
+                )
+            analysis_folder = self._make_combined_run_folder(
+                "combined_analysis_data",
+                base_params   = self._load_params,
+                resume_params = analyse_params,
+                grid_params   = grid_params,
+            )
+        elif analyse_params["grid"] == True:
             analysis_folder = self._make_run_folder("analysis_data", analyse_params, grid_params)
         else:
             analysis_folder = self._make_run_folder("analysis_data", analyse_params)
@@ -1274,5 +1352,74 @@ class Simulation:
                 f"{efrac_suffix}"
         )    
         run_folder = os.path.join(param_folder, datetime.now().strftime("%Y%m%d_%H%M%S_%f"))
+        os.makedirs(run_folder, exist_ok=True)
+        return run_folder
+
+    def _make_combined_run_folder(self, data_type, base_params, resume_params, grid_params=None):
+        """
+        Create and return a timestamped run folder under a two-level parameter
+        hierarchy for chained (load → resume) simulations.
+
+        Folder hierarchy
+        ----------------
+        <project_root>/<data_type>/
+            <base_param_folder>/        ← built from base_params  (the loaded batch)
+                <resume_param_folder>/  ← built from resume_params (the new simulation)
+                    {YYYYMMDD_HHMMSS_ffffff}/
+
+        Both param folder names follow the same naming convention as
+        _make_run_folder(): ro / gamma / a / b / time [/ clen / cnum]
+        [/ rstart_yes] [/ efrac_X].
+
+        Parameters
+        ----------
+        data_type : str
+            Root directory name, e.g. "combined_raw_data" or
+            "combined_analysis_data".
+        base_params : dict
+            Parameters of the original loaded batch.
+            Must contain "ro", "gamma", "a_param", "b_param", "time".
+        resume_params : dict
+            Parameters used for the resume phase.
+            Must contain "ro", "gamma", "a_param", "b_param", "time".
+        grid_params : dict, optional
+            When provided, must contain "cell_lenght" and "cell_number".
+            Applied to both folder levels.
+
+        Returns
+        -------
+        str
+            Path to the newly created timestamped run folder.
+        """
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        base_folder  = os.path.join(project_root, data_type)
+
+        def _param_folder_name(params):
+            efrac_suffix = (
+                f"_efrac_{params['epr_fraction']}"
+                if params.get("epr_fraction", 1.0) < 1.0
+                else ""
+            )
+            if grid_params is not None:
+                rstart_suffix = "_rstart_yes" if params.get("random_start", False) else ""
+                return (
+                    f"ro_{params['ro']}_gamma_{params['gamma']}"
+                    f"_a_{params['a_param']}_b_{params['b_param']}_time_{params['time']}"
+                    f"_clen_{grid_params['cell_lenght']}_cnum_{grid_params['cell_number']}"
+                    f"{rstart_suffix}{efrac_suffix}"
+                )
+            else:
+                return (
+                    f"ro_{params['ro']}_gamma_{params['gamma']}"
+                    f"_a_{params['a_param']}_b_{params['b_param']}_time_{params['time']}"
+                    f"{efrac_suffix}"
+                )
+
+        run_folder = os.path.join(
+            base_folder,
+            _param_folder_name(base_params),
+            _param_folder_name(resume_params),
+            datetime.now().strftime("%Y%m%d_%H%M%S_%f"),
+        )
         os.makedirs(run_folder, exist_ok=True)
         return run_folder
