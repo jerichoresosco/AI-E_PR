@@ -470,22 +470,22 @@ def load_parquet_folder(base_folder, filters, file_map, grid=False, return_run_f
     if grid == True:
         key_map = {
             "ro":           "ro",
-            "gamma":        "gamma",
+            "gamma":        "g",
             "a_param":      "a",
             "b_param":      "b",
-            "time":         "time",
-            "cell_lenght":  "clen",
-            "cell_number":  "cnum",
-            "epr_fraction": "efrac",
+            "time":         "t",
+            "cell_lenght":  "cl",
+            "cell_number":  "cn",
+            "epr_fraction": "ef",
         }
     elif grid == False:
         key_map = {
             "ro":           "ro",
-            "gamma":        "gamma",
+            "gamma":        "g",
             "a_param":      "a",
             "b_param":      "b",
-            "time":         "time",
-            "epr_fraction": "efrac",
+            "time":         "t",
+            "epr_fraction": "ef",
         }
 
     primary_suffix = next(iter(file_map.values()))
@@ -507,7 +507,7 @@ def load_parquet_folder(base_folder, filters, file_map, grid=False, return_run_f
 
         converted = {}
         for k, v in raw_params.items():
-            if k == "time":
+            if k == "t":
                 try:
                     converted[k] = int(v)
                 except ValueError:
@@ -519,13 +519,13 @@ def load_parquet_folder(base_folder, filters, file_map, grid=False, return_run_f
                     converted[k] = v
 
         # Scarta cartelle che non corrispondono alla modalità grid richiesta
-        folder_has_grid = "clen" in converted and "cnum" in converted
+        folder_has_grid = "cl" in converted and "cn" in converted
         if grid != folder_has_grid:
             continue
 
         # Scarta cartelle che non corrispondono alla modalità random_start richiesta
         if grid:
-            folder_has_rstart = converted.get("rstart") == "yes"
+            folder_has_rstart = converted.get("rs") == "y"
             if folder_has_rstart != bool(random_start):
                 continue
 
@@ -619,8 +619,7 @@ def load_raw_parquet(filters=None, grid = False, return_run_folders=False):
 
     user_number = filters.get("user_number", None)
     filters_clean = {k: v for k, v in filters.items()
-                 if v is not None and k not in ("user_number", "grid", "random_start")
-                 and not (k == "epr_fraction" and v == 1)}
+                 if v is not None and k not in ("user_number", "grid", "random_start")}
     project_root = os.path.dirname(os.path.dirname(
         os.path.abspath(inspect.getfile(inspect.currentframe()))
     ))
@@ -676,8 +675,7 @@ def load_analysis_parquet(filters=None, needed_files=None):
     user_number   = filters.get("user_number", None)
     grid          = filters.get("grid", False)
     filters_clean = {k: v for k, v in filters.items()
-                 if v is not None and k not in ("user_number", "grid", "random_start")
-                 and not (k == "epr_fraction" and v == 1)}
+                 if v is not None and k not in ("user_number", "grid", "random_start")}
 
     project_root = os.path.dirname(os.path.dirname(
         os.path.abspath(inspect.getfile(inspect.currentframe()))
@@ -833,18 +831,15 @@ def load_all_aggregate_grids(filters):
     ))
     base_folder = os.path.join(project_root, "analysis_data")
 
+    rstart = filters.get("random_start", False)
+    efrac  = float(filters.get("epr_fraction", 1.0))
     param_folder_name = (
-        f"ro_{filters['ro']}_gamma_{filters['gamma']}"
-        f"_a_{filters['a_param']}_b_{filters['b_param']}_time_{filters['time']}"
+        f"ro_{filters['ro']}_g_{filters['gamma']}"
+        f"_a_{filters['a_param']}_b_{filters['b_param']}_t_{filters['time']}"
     )
     if "cell_lenght" in filters and "cell_number" in filters:
-        param_folder_name += (
-            f"_clen_{filters['cell_lenght']}_cnum_{filters['cell_number']}"
-        )
-        if filters.get("random_start", False):
-            param_folder_name += "_rstart_yes"
-    if filters.get("epr_fraction", 1.0) < 1.0:
-        param_folder_name += f"_efrac_{filters['epr_fraction']}"
+        param_folder_name += f"_cl_{filters['cell_lenght']}_cn_{filters['cell_number']}"
+    param_folder_name += f"_rs_{'y' if rstart else 'n'}_ef_{efrac}"
 
     param_folder = os.path.join(base_folder, param_folder_name)
     if not os.path.exists(param_folder):
@@ -909,18 +904,15 @@ def load_all_batch_stats(filters):
     ))
     base_folder = os.path.join(project_root, "analysis_data")
 
+    rstart = filters.get("random_start", False)
+    efrac  = float(filters.get("epr_fraction", 1.0))
     param_folder_name = (
-        f"ro_{filters['ro']}_gamma_{filters['gamma']}"
-        f"_a_{filters['a_param']}_b_{filters['b_param']}_time_{filters['time']}"
+        f"ro_{filters['ro']}_g_{filters['gamma']}"
+        f"_a_{filters['a_param']}_b_{filters['b_param']}_t_{filters['time']}"
     )
     if "cell_lenght" in filters and "cell_number" in filters:
-        param_folder_name += (
-            f"_clen_{filters['cell_lenght']}_cnum_{filters['cell_number']}"
-        )
-        if filters.get("random_start", False):
-            param_folder_name += "_rstart_yes"
-    if filters.get("epr_fraction", 1.0) < 1.0:
-        param_folder_name += f"_efrac_{filters['epr_fraction']}"
+        param_folder_name += f"_cl_{filters['cell_lenght']}_cn_{filters['cell_number']}"
+    param_folder_name += f"_rs_{'y' if rstart else 'n'}_ef_{efrac}"
 
     param_folder = os.path.join(base_folder, param_folder_name)
     logger.info(f"load_all_batch_stats looking for: {param_folder}")

@@ -12,44 +12,19 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 
-##Problems: Double saving on raw folder, ad also this error message: 2026-04-09 12:35:09 - model.simulation - INFO - Save progress: 10% (3/30 users saved)
-#2026-04-09 12:35:09 - model.simulation - INFO - Save progress: 20% (6/30 users saved)
-#2026-04-09 12:35:09 - model.simulation - INFO - Save progress: 30% (9/30 users saved)
-#Traceback (most recent call last):
-  #File "c:\Users\Jacopo\Desktop\Tesi_Magistrale_AKA_La_Fine\AI-E_PR\main.py", line 242, in <module>
-  #  main()
-  #File "c:\Users\Jacopo\Desktop\Tesi_Magistrale_AKA_La_Fine\AI-E_PR\main.py", line 225, in main
-  #  raw_run_folder = simulation.save_combined_raw_data()
-  #File "c:\Users\Jacopo\Desktop\Tesi_Magistrale_AKA_La_Fine\AI-E_PR\model\simulation.py", line 851, in save_combined_raw_data
-  #  user_df.to_parquet( os.path.join(run_folder, f"user_{i}_history.parquet"), index=False)
- # File "C:\Users\Jacopo\miniconda3\envs\GSA\lib\site-packages\pandas\util\_decorators.py", line 207, in wrapper
-  #  return func(*args, **kwargs)
-  #File "C:\Users\Jacopo\miniconda3\envs\GSA\lib\site-packages\pandas\core\frame.py", line 2835, in to_parquet
-  #  return to_parquet(
-  #File "C:\Users\Jacopo\miniconda3\envs\GSA\lib\site-packages\pandas\io\parquet.py", line 420, in to_parquet
-  #  impl.write(
-  #File "C:\Users\Jacopo\miniconda3\envs\GSA\lib\site-packages\pandas\io\parquet.py", line 176, in write
-  #    path_or_handle, handles, kwargs["filesystem"] = _get_path_or_handle(
-  #File "C:\Users\Jacopo\miniconda3\envs\GSA\lib\site-packages\pandas\io\parquet.py", line 102, in _get_path_or_handle
-  #    handles = get_handle(
-  #File "C:\Users\Jacopo\miniconda3\envs\GSA\lib\site-packages\pandas\io\common.py", line 795, in get_handle
-   # handle = open(handle, ioargs.mode)
-#FileNotFoundError: [Errno 2] No such file or directory: 'c:\\Users\\Jacopo\\Desktop\\Tesi_Magistrale_AKA_La_Fine\\AI-E_PR\\combined_raw_data\\ro_0.1_gamma_0.2_a_0.75_b_0.6_time_10000_clen_21_cnum_21_rstart_yes\\ro_0.1_gamma_0.2_a_0.75_b_0.6_time_20000_clen_21_cnum_21_rstart_yes\\20260409_123509_056420\\user_10_history.parquet'
-#PS C:\Users\Jacopo\Desktop\Tesi_Magistrale_AKA_La_Fine\AI-E_PR> 
-
 def main():
 
     # ==========================================================
     # Choose mode
     # ==========================================================
 
-    mode = "load_simulate_analyse"  # Options:
-                        #   "simulate"             - run simulation, save raw_data only
-                        #   "analyse"              - load raw_data, compute & save analysis_data
-                        #   "simulate_and_analyse" - simulate then analyse without reloading from disk
-                        #   "plot"                 - load analysis_data and plot
-                        #   "load_simulate"        - load a raw_data batch, continue simulation, save raw_data
-                        #   "load_simulate_analyse"- load a raw_data batch, continue simulation, analyse and save
+    mode = "a"  # Options (short aliases):
+                        #   "s"     run simulation, save raw_data only
+                        #   "a"    - load raw_data, compute & save analysis_data
+                        #   "sa"   - simulate then analyse without reloading from disk
+                        #   "p"    - load analysis_data and plot
+                        #   "ls"   - load a raw_data batch, continue simulation, save raw_data
+                        #   "lsa"  load a raw_data batch, continue simulation, analyse and save
 
     # ----------------------------------------------------------
     # simulate_params -- used only in "simulate" and
@@ -64,7 +39,7 @@ def main():
         "time": 10000,
         "grid" : True,
         "random_start": True,
-        "epr_fraction": 0.3,      # fraction of 'time' run with pure EPR before CF (1.0 = pure EPR; 0 < x < 1 enables CF phase)
+        "epr_fraction": 1,      # fraction of 'time' run with pure EPR before CF (1.0 = pure EPR; 0 < x < 1 enables CF phase)
         "top_k": 10,                # number of similar neighbors used in CF phase
     }
 
@@ -86,8 +61,9 @@ def main():
         "gamma": 0.2,
         "a_param": 0.75,
         "b_param": 0.6,
-        "time": 1000000,
-        "grid" : True
+        "time": 10000,
+        "grid": True,
+        "random_start": True,   # must match the simulate_params value used
     }
 
     # ----------------------------------------------------------
@@ -173,7 +149,7 @@ def main():
     # ==========================================================
     # MODE 1: SIMULATE only
     # ==========================================================
-    if mode == "simulate":
+    if mode == "s":
 
         simulation = model.simulation.Simulation()
         simulation.run(simulate_params, grid_params=grid_params)
@@ -182,7 +158,7 @@ def main():
     # ==========================================================
     # MODE 2: ANALYSE only
     # ==========================================================
-    elif mode == "analyse":
+    elif mode == "a":
 
         simulation = model.simulation.Simulation()
         simulation.run_analysis(analyse_params, grid_params=grid_params)
@@ -190,7 +166,7 @@ def main():
     # ==========================================================
     # MODE 3: SIMULATE + ANALYSE (no double disk load)
     # ==========================================================
-    elif mode == "simulate_and_analyse":
+    elif mode == "sa":
 
         simulation = model.simulation.Simulation()
         simulation.run(simulate_params, grid_params=grid_params)
@@ -200,7 +176,7 @@ def main():
     # ==========================================================
     # MODE 4: PLOT only
     # ==========================================================
-    elif mode == "plot":
+    elif mode == "p":
 
         simulation = model.simulation.Simulation()
         simulation.load_analysis_data(plot_params, grid_params=grid_params, plot_list=plot_list)
@@ -217,17 +193,11 @@ def main():
     # one variant (e.g. pure EPR extension) without re-simulating
     # from scratch.
     # ==========================================================
-    elif mode == "load_simulate":
+    elif mode == "ls":
 
         simulation = model.simulation.Simulation()
-
-        # Reconstruct User objects from the chosen raw_data batch
         simulation._reconstruct_users_from_raw(load_params, grid_params=grid_params)
-
-        # Continue the simulation with the new parameters
         simulation.resume(resume_params, grid_params=grid_params)
-
-        # Save the extended trajectories under combined_raw_data/
         simulation.save_combined_raw_data()
 
     # ==========================================================
@@ -236,27 +206,24 @@ def main():
     # Same as MODE 5 but also runs analysis immediately after,
     # without re-reading from disk (in-memory chaining).
     # ==========================================================
-    elif mode == "load_simulate_analyse":
+    elif mode == "lsa":
 
         simulation = model.simulation.Simulation()
-
-        # Reconstruct User objects from the chosen raw_data batch
         simulation._reconstruct_users_from_raw(load_params, grid_params=grid_params)
-
-        # Continue the simulation with the new parameters
         simulation.resume(resume_params, grid_params=grid_params)
-
-        # Save extended raw trajectories under combined_raw_data/
         raw_run_folder = simulation.save_combined_raw_data()
-
-        # Analyse and save under combined_analysis_data/
         simulation.run_analysis(resume_params, raw_run_folder=raw_run_folder,
                                 grid_params=grid_params, combined=True)
 
     else:
         raise ValueError(
-            "Invalid mode. Use: 'simulate', 'analyse', 'simulate_and_analyse', "
-            "'plot', 'load_simulate', or 'load_simulate_analyse'"
+            "Invalid mode. Use short aliases: 's', 'a', 'sa', 'p', 'ls', 'lsa'\n" 
+            "'s' = simulate only\n" 
+            "'a' = analyse only\n" 
+            "'sa' = simulate then analyse without reloading\n"
+            "'p' = plot only\n" 
+            "'ls' = load a raw_data batch, continue simulation, save raw_data\n"
+            "'lsa' = load a raw_data batch, continue simulation, analyse and save"
         )
 
     elapsed = time.time() - start_time

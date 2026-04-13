@@ -413,24 +413,25 @@ class Simulation:
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         base_folder  = os.path.join(project_root, "raw_data")
 
-        efrac = load_params.get("epr_fraction", 1.0)
-        efrac_suffix  = f"_efrac_{efrac}" if efrac < 1.0 else ""
+        efrac  = float(load_params.get("epr_fraction", 1.0))
+        rstart = load_params.get("random_start", False)
 
         if grid_exists and grid_params is not None:
-            rstart_suffix = "_rstart_yes" if random_start else ""
             param_folder_name = (
-                f"ro_{load_params['ro']}_gamma_{load_params['gamma']}"
+                f"ro_{load_params['ro']}_g_{load_params['gamma']}"
                 f"_a_{load_params['a_param']}_b_{load_params['b_param']}"
-                f"_time_{load_params['time']}"
-                f"_clen_{grid_params['cell_lenght']}_cnum_{grid_params['cell_number']}"
-                f"{rstart_suffix}{efrac_suffix}"
+                f"_t_{load_params['time']}"
+                f"_cl_{grid_params['cell_lenght']}_cn_{grid_params['cell_number']}"
+                f"_rs_{'y' if rstart else 'n'}"
+                f"_ef_{efrac}"
             )
         else:
             param_folder_name = (
-                f"ro_{load_params['ro']}_gamma_{load_params['gamma']}"
+                f"ro_{load_params['ro']}_g_{load_params['gamma']}"
                 f"_a_{load_params['a_param']}_b_{load_params['b_param']}"
-                f"_time_{load_params['time']}"
-                f"{efrac_suffix}"
+                f"_t_{load_params['time']}"
+                f"_rs_{'y' if rstart else 'n'}"
+                f"_ef_{efrac}"
             )
 
         param_folder = os.path.join(base_folder, param_folder_name)
@@ -672,26 +673,22 @@ class Simulation:
         check_base = os.path.join(root_dir, "check")
 
         # Build the param-folder name using the same convention as _make_run_folder
-        p = self._simulate_params
-        efrac_suffix  = (
-            f"_efrac_{p['epr_fraction']}"
-            if p.get("epr_fraction", 1.0) < 1.0
-            else ""
-        )
+        p      = self._simulate_params
+        efrac  = float(p.get("epr_fraction", 1.0))
+        rstart = p.get("random_start", False)
         if self.grid_exists and getattr(self, "_grid_params", None) is not None:
             gp = self._grid_params
-            rstart_suffix = "_rstart_yes" if p.get("random_start", False) else ""
             param_name = (
-                f"ro_{p['ro']}_gamma_{p['gamma']}"
-                f"_a_{p['a_param']}_b_{p['b_param']}_time_{p['time']}"
-                f"_clen_{gp['cell_lenght']}_cnum_{gp['cell_number']}"
-                f"{rstart_suffix}{efrac_suffix}"
+                f"ro_{p['ro']}_g_{p['gamma']}"
+                f"_a_{p['a_param']}_b_{p['b_param']}_t_{p['time']}"
+                f"_cl_{gp['cell_lenght']}_cn_{gp['cell_number']}"
+                f"_rs_{'y' if rstart else 'n'}_ef_{efrac}"
             )
         else:
             param_name = (
-                f"ro_{p['ro']}_gamma_{p['gamma']}"
-                f"_a_{p['a_param']}_b_{p['b_param']}_time_{p['time']}"
-                f"{efrac_suffix}"
+                f"ro_{p['ro']}_g_{p['gamma']}"
+                f"_a_{p['a_param']}_b_{p['b_param']}_t_{p['time']}"
+                f"_rs_{'y' if rstart else 'n'}_ef_{efrac}"
             )
 
         # Reuse (or create once) the batch timestamp folder for this run
@@ -1327,30 +1324,26 @@ class Simulation:
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         base_folder  = os.path.join(project_root, data_type)
 
-        efrac_suffix = (
-            f"_efrac_{params['epr_fraction']}"
-            if params.get("epr_fraction", 1.0) < 1.0
-            else ""
-        )
+        efrac  = float(params.get("epr_fraction", 1.0))
+        rstart = params.get("random_start", False)
 
         if grid_params is None:
             param_folder = os.path.join(
                 base_folder,
-                f"ro_{params['ro']}_gamma_{params['gamma']}"
-                f"_a_{params['a_param']}_b_{params['b_param']}_time_{params['time']}"
-                f"{efrac_suffix}"
-        )
-            
+                f"ro_{params['ro']}_g_{params['gamma']}"
+                f"_a_{params['a_param']}_b_{params['b_param']}_t_{params['time']}"
+                f"_rs_{'y' if rstart else 'n'}"
+                f"_ef_{efrac}"
+            )
         else:
-            rstart_suffix = "_rstart_yes" if params.get("random_start", False) else ""
             param_folder = os.path.join(
                 base_folder,
-                f"ro_{params['ro']}_gamma_{params['gamma']}"
-                f"_a_{params['a_param']}_b_{params['b_param']}_time_{params['time']}"
-                f"_clen_{grid_params['cell_lenght']}_cnum_{grid_params['cell_number']}"
-                f"{rstart_suffix}"
-                f"{efrac_suffix}"
-        )    
+                f"ro_{params['ro']}_g_{params['gamma']}"
+                f"_a_{params['a_param']}_b_{params['b_param']}_t_{params['time']}"
+                f"_cl_{grid_params['cell_lenght']}_cn_{grid_params['cell_number']}"
+                f"_rs_{'y' if rstart else 'n'}"
+                f"_ef_{efrac}"
+            )
         run_folder = os.path.join(param_folder, datetime.now().strftime("%Y%m%d_%H%M%S_%f"))
         os.makedirs(run_folder, exist_ok=True)
         return run_folder
@@ -1394,31 +1387,46 @@ class Simulation:
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         base_folder  = os.path.join(project_root, data_type)
 
-        def _param_folder_name(params):
-            efrac_suffix = (
-                f"_efrac_{params['epr_fraction']}"
-                if params.get("epr_fraction", 1.0) < 1.0
-                else ""
+        # Shared physical params (must match between base and resume)
+        ro      = base_params["ro"]
+        gamma   = base_params["gamma"]
+        a_param = base_params["a_param"]
+        b_param = base_params["b_param"]
+        rstart  = base_params.get("random_start", False)
+
+        # Time: always differs
+        t0 = base_params["time"]
+        t1 = resume_params["time"]
+
+        # epr_fraction: show both if different, otherwise show once
+        ef0 = float(base_params.get("epr_fraction", 1.0))
+        ef1 = float(resume_params.get("epr_fraction", 1.0))
+        if ef0 == ef1:
+            ef_part = f"_ef_{ef0}"
+        else:
+            ef_part = f"_ef0_{ef0}_ef1_{ef1}"
+
+        if grid_params is not None:
+            param_folder_name = (
+                f"ro_{ro}_g_{gamma}"
+                f"_a_{a_param}_b_{b_param}"
+                f"_t0_{t0}_t1_{t1}"
+                f"_cl_{grid_params['cell_lenght']}_cn_{grid_params['cell_number']}"
+                f"_rs_{'y' if rstart else 'n'}"
+                f"{ef_part}"
             )
-            if grid_params is not None:
-                rstart_suffix = "_rstart_yes" if params.get("random_start", False) else ""
-                return (
-                    f"ro_{params['ro']}_gamma_{params['gamma']}"
-                    f"_a_{params['a_param']}_b_{params['b_param']}_time_{params['time']}"
-                    f"_clen_{grid_params['cell_lenght']}_cnum_{grid_params['cell_number']}"
-                    f"{rstart_suffix}{efrac_suffix}"
-                )
-            else:
-                return (
-                    f"ro_{params['ro']}_gamma_{params['gamma']}"
-                    f"_a_{params['a_param']}_b_{params['b_param']}_time_{params['time']}"
-                    f"{efrac_suffix}"
-                )
+        else:
+            param_folder_name = (
+                f"ro_{ro}_g_{gamma}"
+                f"_a_{a_param}_b_{b_param}"
+                f"_t0_{t0}_t1_{t1}"
+                f"_rs_{'y' if rstart else 'n'}"
+                f"{ef_part}"
+            )
 
         run_folder = os.path.join(
             base_folder,
-            _param_folder_name(base_params),
-            _param_folder_name(resume_params),
+            param_folder_name,
             datetime.now().strftime("%Y%m%d_%H%M%S_%f"),
         )
         os.makedirs(run_folder, exist_ok=True)
