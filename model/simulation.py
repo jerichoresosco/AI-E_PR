@@ -2,6 +2,7 @@ import numpy as np
 import model.user
 import model.utils
 import model.utils_plot
+import model.utils_user_knn
 import model.grid
 import pandas as pd
 import os
@@ -127,8 +128,6 @@ class Simulation:
         self._simulate_params = simulate_params
         self.grid_exists      = grid_exists
         self._random_start    = random_start
-        # Reset per-run check folder so each call to run() gets its own batch subfolder
-        self._check_run_dir   = None
 
         if grid_exists == True:
             self._grid_params = grid_params
@@ -145,10 +144,9 @@ class Simulation:
         )
 
         # ---------------------------------------------------------------
-        # Phase 1: EPR 
+        # Phase 1: EPR
         # ---------------------------------------------------------------
         for i in range(user_number):
-            # Determine starting position
             if grid_exists and random_start:
                 sc = self._spatial_center
                 init_pos = (
@@ -179,10 +177,12 @@ class Simulation:
         # Phase 2: CF -- build neighbor data, then run CF for remaining time
         # ------------------------------------------------------------------
         if epr_fraction < 1.0:
-            cf_updates   = 4 ##NEED MAIN IMPLEMENTATION!!!!
+            cf_updates   = 4  ##NEED MAIN IMPLEMENTATION!!!!
             n_intervals  = cf_updates + 1
             cf_duration  = time - epr_time
             interval_len = cf_duration / n_intervals
+
+            check_run_dir = None  # created on first interval, reused afterwards
 
             for interval in range(n_intervals):
                 t_start = epr_time + interval * interval_len
@@ -192,10 +192,18 @@ class Simulation:
                     f"CF interval {interval + 1}/{n_intervals}: "
                     f"rebuilding similarities, running [{t_start:.1f}, {t_end:.1f}]..."
                 )
-                cf_neighbors_list = self._build_cf_data(top_k, interval_idx=interval)
+                cf_neighbors, check_run_dir = model.utils_user_knn.build_cf_data(
+                    users_list     = self.users_list,
+                    top_k          = top_k,
+                    simulate_params= self._simulate_params,
+                    grid_exists    = self.grid_exists,
+                    grid_params    = getattr(self, "_grid_params", None),
+                    check_run_dir  = check_run_dir,
+                    interval_idx   = interval,
+                )
 
                 for i, user in enumerate(self.users_list):
-                    neighbors = cf_neighbors_list[i]
+                    neighbors = cf_neighbors[i]
                     while user.clock < t_end:
                         user.make_decision_cf(neighbors)
 
@@ -255,7 +263,6 @@ class Simulation:
         self.ro               = ro
         self.gamma            = gamma
         self._simulate_params = simulate_params
-        self._check_run_dir   = None   # new check subfolder
 
         # Resolve grid_params
         if grid_params is not None:
@@ -268,8 +275,7 @@ class Simulation:
         n_users   = len(self.users_list)
         milestone = max(1, n_users // 10)
 
-
-        ##PER ORA LO LASCIO COSì: Si introduce un artificio nello scorrimento del tempo, 
+        ##PER ORA LO LASCIO COSì: Si introduce un artificio nello scorrimento del tempo,
         ##Da verificare se è problematico o no
         # Compute the effective start of this resume window from the users' clocks
         current_clocks = [u.clock for u in self.users_list]
@@ -321,15 +327,25 @@ class Simulation:
             cf_duration  = time_target - epr_end
             interval_len = cf_duration / n_intervals
 
+            check_run_dir = None  # created on first interval, reused afterwards
+
             for interval in range(n_intervals):
                 t_end = epr_end + (interval + 1) * interval_len
                 logger.info(
                     f"Resume CF interval {interval + 1}/{n_intervals}: "
                     f"rebuilding similarities, running to {t_end:.1f}..."
                 )
-                cf_neighbors_list = self._build_cf_data(top_k, interval_idx=interval)
+                cf_neighbors, check_run_dir = model.utils_user_knn.build_cf_data(
+                    users_list     = self.users_list,
+                    top_k          = top_k,
+                    simulate_params= self._simulate_params,
+                    grid_exists    = self.grid_exists,
+                    grid_params    = getattr(self, "_grid_params", None),
+                    check_run_dir  = check_run_dir,
+                    interval_idx   = interval,
+                )
                 for i, user in enumerate(self.users_list):
-                    neighbors = cf_neighbors_list[i]
+                    neighbors = cf_neighbors[i]
                     while user.clock < t_end:
                         user.make_decision_cf(neighbors)
 
@@ -395,7 +411,7 @@ class Simulation:
             When the parameter folder or the requested batch folder does not exist.
         RuntimeError
             When no batch folders are found inside the parameter folder.
-        """ 
+        """
 
         # Resolve grid_params
         if grid_params is not None:
@@ -518,7 +534,7 @@ class Simulation:
             if venue_df is not None:
                 venue_history += venue_df.values.tolist()
 
-            # Last row of history → current state
+            # Last row of history -> current state
             last = user_history[-1]
             col  = {name: idx for idx, name in enumerate(history_header)}
 
@@ -528,13 +544,13 @@ class Simulation:
             last_departure= last[col["Departure"]]
             last_state    = last[col["State(E/R)"]]
 
-            # Rebuild _venue_index: venue_name → row index in venue_history
+            # Rebuild _venue_index: venue_name -> row index in venue_history
             venue_index = {}
             for row_idx, row in enumerate(venue_history[1:], start=1):
                 venue_index[row[0]] = row_idx
 
             # ------------------------------------------------------------------
-            # Build a minimal User object *without* calling first_exploration()
+            # Build a minimal User object without calling first_exploration()
             # We achieve this by calling __new__ and populating attributes manually
             # ------------------------------------------------------------------
             user = model.user.User.__new__(model.user.User)
@@ -599,154 +615,6 @@ class Simulation:
 
         return run_folder
 
-    #I'll bring it in a separate folder!!!
-    def _build_cf_data(self, top_k, interval_idx=0):
-        """
-        Build cosine-similarity-based top-k neighbor lists for every user.
-
-        Constructs a user-venue visit-count matrix from the current state of
-        self.users_list, computes pairwise cosine similarities, and returns for
-        each user a ranked list of the most similar neighbors.
-
-        Files are written to a per-run subfolder inside check/ whose name mirrors
-        the analysis_data folder convention (params + batch timestamp), so every
-        run is kept separate and can be traced back to its simulation parameters.
-
-        Parameters
-        ----------
-        top_k : int
-            Maximum number of neighbors to retain per user.
-            If fewer users have positive similarity, all of them are kept.
-        interval_idx : int, optional (default=0)
-            0-based index of the current CF interval, forwarded to the
-            similarity-distribution plot so each interval gets its own file.
-
-        Returns
-        -------
-        list of list of (User, float)
-            cf_neighbors[i] = [(neighbor_User, similarity_weight), ...]
-            sorted by descending similarity for user i.
-            An empty list is returned for users with no positively similar neighbor.
-
-        Notes
-        -----
-        - Similarity is cosine similarity on raw visit counts.
-        - Self-similarity is zeroed out (a user is never its own neighbor).
-        - Only neighbors with strictly positive similarity are included.
-        """
-        n_users = len(self.users_list)
-
-        # Collect all unique venue names in insertion order
-        all_venues = []
-        venue_set  = set()
-        for user in self.users_list:
-            for row in user.venue_history[1:]:
-                if row[0] not in venue_set:
-                    venue_set.add(row[0])
-                    all_venues.append(row[0])
-        venue_to_idx = {v: i for i, v in enumerate(all_venues)}
-        n_venues = len(all_venues)
-
-        # Build user-venue visit count matrix
-        uv_matrix = np.zeros((n_users, n_venues), dtype=float)
-        for ui, user in enumerate(self.users_list):
-            for row in user.venue_history[1:]:
-                uv_matrix[ui, venue_to_idx[row[0]]] = row[1]
-
-        # Cosine similarity matrix
-        norms = np.linalg.norm(uv_matrix, axis=1, keepdims=True)
-        norms[norms == 0] = 1.0
-        uv_norm    = uv_matrix / norms
-        sim_matrix = uv_norm @ uv_norm.T
-        np.fill_diagonal(sim_matrix, 0.0)
-
-        # ------------------------------------------------------------------
-        # Build the check subfolder:
-        #   check/
-        #     ro_{ro}_gamma_{gamma}_a_{a}_b_{b}_time_{time}[_clen_X_cnum_Y][_rstart_yes][_efrac_Z]/
-        #       {batch_timestamp}/
-        #           sim_matrix_interval_{N}.txt
-        #           neighbors_interval_{N}.txt
-        #           neighbor_sim_dist_interval_{N}.pdf
-        # ------------------------------------------------------------------
-        root_dir   = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        check_base = os.path.join(root_dir, "check")
-
-        # Build the param-folder name using the same convention as _make_run_folder
-        p      = self._simulate_params
-        efrac  = float(p.get("epr_fraction", 1.0))
-        rstart = p.get("random_start", False)
-        if self.grid_exists and getattr(self, "_grid_params", None) is not None:
-            gp = self._grid_params
-            param_name = (
-                f"ro_{p['ro']}_g_{p['gamma']}"
-                f"_a_{p['a_param']}_b_{p['b_param']}_t_{p['time']}"
-                f"_cl_{gp['cell_lenght']}_cn_{gp['cell_number']}"
-                f"_rs_{'y' if rstart else 'n'}_ef_{efrac}"
-            )
-        else:
-            param_name = (
-                f"ro_{p['ro']}_g_{p['gamma']}"
-                f"_a_{p['a_param']}_b_{p['b_param']}_t_{p['time']}"
-                f"_rs_{'y' if rstart else 'n'}_ef_{efrac}"
-            )
-
-        # Reuse (or create once) the batch timestamp folder for this run
-        if self._check_run_dir is None:
-            batch_ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-            self._check_run_dir = os.path.join(check_base, param_name, batch_ts)
-            os.makedirs(self._check_run_dir, exist_ok=True)
-            logger.info(f"Check folder for this run: {self._check_run_dir}")
-
-        check_run_dir = self._check_run_dir
-        interval_label = interval_idx + 1   # 1-based for file names
-
-        # Save sim_matrix
-        sim_matrix_path = os.path.join(
-            check_run_dir, f"sim_matrix_interval_{interval_label:02d}.txt"
-        )
-        np.savetxt(sim_matrix_path, sim_matrix, fmt="%.6f")
-
-        # Build neighbor lists
-        top_k_actual = min(top_k, n_users - 1)
-        cf_neighbors = []
-        for ui in range(n_users):
-            sims     = sim_matrix[ui]
-            pos_mask = sims > 0
-            if not pos_mask.any():
-                cf_neighbors.append([])
-                continue
-            pos_indices = np.where(pos_mask)[0]
-            if len(pos_indices) > top_k_actual:
-                pos_indices = pos_indices[np.argsort(sims[pos_indices])[::-1]][:top_k_actual]
-            else:
-                pos_indices = pos_indices[np.argsort(sims[pos_indices])[::-1]]
-            cf_neighbors.append(
-                [(self.users_list[j], float(sims[j])) for j in pos_indices]
-            )
-
-        # Save neighbors file
-        neighbors_path = os.path.join(
-            check_run_dir, f"neighbors_interval_{interval_label:02d}.txt"
-        )
-        with open(neighbors_path, "w") as f:
-            for row in cf_neighbors:
-                f.write(",".join(map(str, row)) + "\n")
-
-        # Plot similarity distribution for this interval
-        model.utils_plot.plot_cf_neighbor_similarity_distribution(
-            cf_neighbors,
-            check_run_dir=check_run_dir,
-            interval_idx=interval_idx,
-            top_n_ranks=3,
-        )
-
-        logger.info(
-            f"CF neighbor data built: {n_users} users, {n_venues} unique venues, "
-            f"top_k={top_k_actual}, interval={interval_label}"
-        )
-        return cf_neighbors
-
     def save_raw_data(self):
         """
         Serialise user_history and venue_history for every simulated user to
@@ -782,7 +650,6 @@ class Simulation:
         for i, user in enumerate(self.users_list):
             user_df  = pd.DataFrame(user.user_history[1:],  columns=user.user_history[0])
             venue_df = pd.DataFrame(user.venue_history[1:], columns=user.venue_history[0])
-            #print(venue_df)
 
             user_df.to_parquet( os.path.join(run_folder, f"user_{i}_history.parquet"), index=False)
             venue_df.to_parquet(os.path.join(run_folder, f"user_{i}_venue.parquet"),   index=False)
@@ -1022,11 +889,9 @@ class Simulation:
                 pct = ((i + 1) / total) * 100
                 logger.info(f"Analysis progress: {pct:.0f}% ({i+1}/{total} users)")
 
-        # Individual Gini 
-        gini_ind = model.utils.compute_individual_gini(venue_history_df_list) 
-        # Collective Gini coefficient 
+        gini_ind  = model.utils.compute_individual_gini(venue_history_df_list)
         gini_coll = model.utils.compute_collective_gini(venue_history_df_list)
-            
+
         batch_stats_df = pd.DataFrame([
             {"metric": "gini_collective",     "value": gini_coll},
             {"metric": "gini_individual",     "value": gini_ind},
@@ -1037,8 +902,8 @@ class Simulation:
 
         if analyse_params.get("grid", False):
             batch_grid, _ = model.utils.compute_and_save_aggregate_grid(analysis_folder)
-            moran_i_dict = model.utils.compute_moran_i(batch_grid)
-            moran_df = pd.DataFrame([{"metric": k, "value": v} for k, v in moran_i_dict.items()])
+            moran_i_dict  = model.utils.compute_moran_i(batch_grid)
+            moran_df      = pd.DataFrame([{"metric": k, "value": v} for k, v in moran_i_dict.items()])
             batch_stats_df = pd.concat([batch_stats_df, moran_df], ignore_index=True)
 
         batch_stats_df.to_parquet(
@@ -1203,7 +1068,7 @@ class Simulation:
             "two_radius", "s_over_time", "rg_over_time".
         """
         self._show = show
-        p = self._plot_params
+        p  = self._plot_params
         pg = self._plot_grid_params
 
         if "mobility" in plot_list:
@@ -1394,17 +1259,12 @@ class Simulation:
         b_param = base_params["b_param"]
         rstart  = base_params.get("random_start", False)
 
-        # Time: always differs
         t0 = base_params["time"]
         t1 = resume_params["time"]
 
-        # epr_fraction: show both if different, otherwise show once
         ef0 = float(base_params.get("epr_fraction", 1.0))
         ef1 = float(resume_params.get("epr_fraction", 1.0))
-        if ef0 == ef1:
-            ef_part = f"_ef_{ef0}"
-        else:
-            ef_part = f"_ef0_{ef0}_ef1_{ef1}"
+        ef_part = f"_ef0_{ef0}_ef1_{ef1}"
 
         if grid_params is not None:
             param_folder_name = (

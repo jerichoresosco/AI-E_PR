@@ -18,7 +18,7 @@ def main():
     # Choose mode
     # ==========================================================
 
-    mode = "a"  # Options (short aliases):
+    mode = "sa"  # Options (short aliases):
                         #   "s"     run simulation, save raw_data only
                         #   "a"    - load raw_data, compute & save analysis_data
                         #   "sa"   - simulate then analyse without reloading from disk
@@ -39,7 +39,7 @@ def main():
         "time": 10000,
         "grid" : True,
         "random_start": True,
-        "epr_fraction": 1,      # fraction of 'time' run with pure EPR before CF (1.0 = pure EPR; 0 < x < 1 enables CF phase)
+        "epr_fraction": 0.3,      # fraction of 'time' run with pure EPR before CF (1.0 = pure EPR; 0 < x < 1 enables CF phase)
         "top_k": 10,                # number of similar neighbors used in CF phase
     }
 
@@ -103,7 +103,7 @@ def main():
         "time": 10000,            # time of the ORIGINAL simulation to load
         "grid": True,
         "random_start": True,
-        # "epr_fraction": 0.3,   # include only if the original run used CF
+        "epr_fraction": 0.3,   # include only if the original run used CF
         # "batch_id": "20240601_153012_004321",  # omit to use the most recent batch
     }
 
@@ -125,7 +125,7 @@ def main():
         "time": 20000,            # absolute target: users will run until clock=20000
         "grid": True,
         "random_start": True,
-        "epr_fraction": 1.0,      # 1.0 = pure EPR resume; <1.0 = EPR then CF
+        "epr_fraction": 0.3,      # 1.0 = pure EPR resume; <1.0 = EPR then CF
         "top_k": 10,
     }
 
