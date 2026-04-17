@@ -34,18 +34,18 @@ def build_cf_data(users_list, top_k, cf_type,
     Parameters
     ----------
     users_list      : list of User
-    top_k           : int  – max neighbors to retain per user
+    top_k           : int  - max neighbors to retain per user
     cf_type         : "uk" | "ik"
-    simulate_params : dict – used only for check/ folder naming
+    simulate_params : dict - used only for check/ folder naming
     grid_exists     : bool
     grid_params     : dict | None
-    check_run_dir   : str | None – pass None on first call; returned path reused afterwards
-    interval_idx    : int  – 0-based interval index for file naming
+    check_run_dir   : str | None - pass None on first call; returned path reused afterwards
+    interval_idx    : int  - 0-based interval index for file naming
 
     Returns
     -------
-    cf_neighbors   : list  – one entry per user; semantics depend on cf_type
-    check_run_dir  : str   – folder path (created on first call, reused afterwards)
+    cf_neighbors   : list  - one entry per user; semantics depend on cf_type
+    check_run_dir  : str   - folder path (created on first call, reused afterwards)
     """
     if cf_type == "uk":
         return _build_uk_data(users_list, top_k, simulate_params,
