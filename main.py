@@ -40,7 +40,8 @@ def main():
         "grid" : True,
         "random_start": True,
         "epr_fraction": 0.3,      # fraction of 'time' run with pure EPR before CF (1.0 = pure EPR; 0 < x < 1 enables CF phase)
-        "top_k": 10,                # number of similar neighbors used in CF phase
+        "cf_type": "ik",          # CF algorithm: "uk" = User-KNN, "ik" = Item-KNN
+        "top_k": 10,              # number of similar neighbors used in CF phase
     }
 
     ##TOPK STILL NOT IN THE SAVING/PLOT PROCEDURE!!!!!1
@@ -79,8 +80,9 @@ def main():
         "time": 10000,
         "user_number": 30,       #For correct displaying
         "grid": True,
-        "random_start": True,      # must match the simulate_params value used
-        "epr_fraction": 0.3,      
+        "random_start": True,
+        "epr_fraction": 0.3,
+        "cf_type": "uk",         # must match the simulate_params value used
     }
 
     # ----------------------------------------------------------
@@ -103,7 +105,8 @@ def main():
         "time": 10000,            # time of the ORIGINAL simulation to load
         "grid": True,
         "random_start": True,
-        "epr_fraction": 0.3,   # include only if the original run used CF
+        "epr_fraction": 0.3,      # include only if the original run used CF
+        "cf_type": "uk",          # must match the cf_type of the original run
         # "batch_id": "20240601_153012_004321",  # omit to use the most recent batch
     }
 
@@ -126,6 +129,7 @@ def main():
         "grid": True,
         "random_start": True,
         "epr_fraction": 0.3,      # 1.0 = pure EPR resume; <1.0 = EPR then CF
+        "cf_type": "uk",          # CF algorithm for the resume phase: "uk" or "ik"
         "top_k": 10,
     }
 

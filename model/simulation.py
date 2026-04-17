@@ -2,7 +2,7 @@ import numpy as np
 import model.user
 import model.utils
 import model.utils_plot
-import model.utils_user_knn
+import model.utils_cf
 import model.grid
 import pandas as pd
 import os
@@ -109,9 +109,11 @@ class Simulation:
         user_number  = simulate_params["user_number"]
         time         = simulate_params["time"]
         grid_exists  = simulate_params["grid"]
+        #Cambiare la gestione dei valori predefiniti negli attributi che seguono
         random_start = simulate_params.get("random_start", False)
         epr_fraction = simulate_params.get("epr_fraction", 1.0)
         top_k        = simulate_params.get("top_k", 10)
+        cf_type      = simulate_params.get("cf_type", "uk")
 
         if epr_fraction <= 0:
             raise ValueError(
@@ -192,9 +194,10 @@ class Simulation:
                     f"CF interval {interval + 1}/{n_intervals}: "
                     f"rebuilding similarities, running [{t_start:.1f}, {t_end:.1f}]..."
                 )
-                cf_neighbors, check_run_dir = model.utils_user_knn.build_cf_data(
+                cf_neighbors, check_run_dir = model.utils_cf.build_cf_data(
                     users_list     = self.users_list,
                     top_k          = top_k,
+                    cf_type        = cf_type,
                     simulate_params= self._simulate_params,
                     grid_exists    = self.grid_exists,
                     grid_params    = getattr(self, "_grid_params", None),
@@ -205,7 +208,7 @@ class Simulation:
                 for i, user in enumerate(self.users_list):
                     neighbors = cf_neighbors[i]
                     while user.clock < t_end:
-                        user.make_decision_cf(neighbors)
+                        user.make_decision_cf(neighbors, cf_type)
 
         for user in self.users_list:
             header    = user.user_history[0]
@@ -259,6 +262,7 @@ class Simulation:
         time_target  = simulate_params["time"]
         epr_fraction = simulate_params.get("epr_fraction", 1.0)
         top_k        = simulate_params.get("top_k", 10)
+        cf_type      = simulate_params.get("cf_type", "uk")
 
         self.ro               = ro
         self.gamma            = gamma
@@ -335,9 +339,10 @@ class Simulation:
                     f"Resume CF interval {interval + 1}/{n_intervals}: "
                     f"rebuilding similarities, running to {t_end:.1f}..."
                 )
-                cf_neighbors, check_run_dir = model.utils_user_knn.build_cf_data(
+                cf_neighbors, check_run_dir = model.utils_cf.build_cf_data(
                     users_list     = self.users_list,
                     top_k          = top_k,
+                    cf_type        = cf_type,
                     simulate_params= self._simulate_params,
                     grid_exists    = self.grid_exists,
                     grid_params    = getattr(self, "_grid_params", None),
@@ -347,7 +352,7 @@ class Simulation:
                 for i, user in enumerate(self.users_list):
                     neighbors = cf_neighbors[i]
                     while user.clock < t_end:
-                        user.make_decision_cf(neighbors)
+                        user.make_decision_cf(neighbors, cf_type)
 
         for user in self.users_list:
             header    = user.user_history[0]
@@ -429,8 +434,10 @@ class Simulation:
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         base_folder  = os.path.join(project_root, "raw_data")
 
-        efrac  = float(load_params.get("epr_fraction", 1.0))
-        rstart = load_params.get("random_start", False)
+        efrac   = float(load_params.get("epr_fraction", 1.0))
+        rstart  = load_params.get("random_start", False)
+        cf_type = load_params.get("cf_type", None)
+        cf_part = f"_cf_{cf_type}" if (efrac < 1.0 and cf_type is not None) else ""
 
         if grid_exists and grid_params is not None:
             param_folder_name = (
@@ -440,6 +447,7 @@ class Simulation:
                 f"_cl_{grid_params['cell_lenght']}_cn_{grid_params['cell_number']}"
                 f"_rs_{'y' if rstart else 'n'}"
                 f"_ef_{efrac}"
+                f"{cf_part}"
             )
         else:
             param_folder_name = (
@@ -448,6 +456,7 @@ class Simulation:
                 f"_t_{load_params['time']}"
                 f"_rs_{'y' if rstart else 'n'}"
                 f"_ef_{efrac}"
+                f"{cf_part}"
             )
 
         param_folder = os.path.join(base_folder, param_folder_name)
@@ -1152,24 +1161,27 @@ class Simulation:
 
         Folder hierarchy:
             <project_root>/<data_type>/
-                ro_{ro}_gamma_{gamma}_a_{a_param}_b_{b_param}_time_{time}/
+                ro_{ro}_g_{gamma}_a_{a}_b_{b}_t_{time}/
                     {YYYYMMDD_HHMMSS_ffffff}/
 
         When grid_params is provided, the parameter folder is extended with
         grid dimensions:
-                ro_{ro}_..._time_{time}_clen_{cell_lenght}_cnum_{cell_number}/
+                ro_{ro}_..._t_{time}_cl_{cell_lenght}_cn_{cell_number}/
 
-        The single-token keys ``clen``, ``cnum``, and ``rstart`` are used
+        The single-token keys ``cl``, ``cn``, and ``rs`` are used
         so that the folder-name parser in the data loaders can split on
         ``_`` and pair tokens unambiguously.
 
         When a grid is active and ``random_start=True`` is present in
-        params, the suffix ``_rstart_yes`` is appended to distinguish
+        params, the suffix ``_rs_y`` is appended to distinguish
         random-origin runs from fixed-origin ones.
 
         When ``epr_fraction`` is present in params and < 1.0, the suffix
-        ``_efrac_{epr_fraction}`` is appended to distinguish CF runs from
+        ``_ef_{epr_fraction}`` is appended to distinguish CF runs from
         pure EPR runs.
+
+        When ``epr_fraction`` < 1.0 and ``cf_type`` is present in params,
+        the suffix ``_cf_{cf_type}`` is appended (e.g. ``_cf_uk``, ``_cf_ik``).
 
         Parameters
         ----------
@@ -1177,7 +1189,8 @@ class Simulation:
             e.g. "raw_data" or "analysis_data".
         params : dict
             Must contain "ro", "gamma", "a_param", "b_param", "time".
-            Optional: "random_start" (bool), "epr_fraction" (float).
+            Optional: "random_start" (bool), "epr_fraction" (float),
+            "cf_type" (str, only written when epr_fraction < 1.0).
         grid_params : dict, optional
             When provided, must contain "cell_lenght" and "cell_number".
 
@@ -1189,8 +1202,12 @@ class Simulation:
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         base_folder  = os.path.join(project_root, data_type)
 
-        efrac  = float(params.get("epr_fraction", 1.0))
-        rstart = params.get("random_start", False)
+        efrac   = float(params.get("epr_fraction", 1.0))
+        rstart  = params.get("random_start", False)
+        cf_type = params.get("cf_type", None)
+
+        # Append cf_type only when a CF phase is actually present
+        cf_part = f"_cf_{cf_type}" if (efrac < 1.0 and cf_type is not None) else ""
 
         if grid_params is None:
             param_folder = os.path.join(
@@ -1199,6 +1216,7 @@ class Simulation:
                 f"_a_{params['a_param']}_b_{params['b_param']}_t_{params['time']}"
                 f"_rs_{'y' if rstart else 'n'}"
                 f"_ef_{efrac}"
+                f"{cf_part}"
             )
         else:
             param_folder = os.path.join(
@@ -1208,6 +1226,7 @@ class Simulation:
                 f"_cl_{grid_params['cell_lenght']}_cn_{grid_params['cell_number']}"
                 f"_rs_{'y' if rstart else 'n'}"
                 f"_ef_{efrac}"
+                f"{cf_part}"
             )
         run_folder = os.path.join(param_folder, datetime.now().strftime("%Y%m%d_%H%M%S_%f"))
         os.makedirs(run_folder, exist_ok=True)
@@ -1266,6 +1285,15 @@ class Simulation:
         ef1 = float(resume_params.get("epr_fraction", 1.0))
         ef_part = f"_ef0_{ef0}_ef1_{ef1}"
 
+        # Append cf_type tokens only when a CF phase was/is active
+        cf0 = base_params.get("cf_type", None)
+        cf1 = resume_params.get("cf_type", None)
+        cf_part = ""
+        if ef0 < 1.0 and cf0 is not None:
+            cf_part += f"_cf0_{cf0}"
+        if ef1 < 1.0 and cf1 is not None:
+            cf_part += f"_cf1_{cf1}"
+
         if grid_params is not None:
             param_folder_name = (
                 f"ro_{ro}_g_{gamma}"
@@ -1274,6 +1302,7 @@ class Simulation:
                 f"_cl_{grid_params['cell_lenght']}_cn_{grid_params['cell_number']}"
                 f"_rs_{'y' if rstart else 'n'}"
                 f"{ef_part}"
+                f"{cf_part}"
             )
         else:
             param_folder_name = (
@@ -1282,6 +1311,7 @@ class Simulation:
                 f"_t0_{t0}_t1_{t1}"
                 f"_rs_{'y' if rstart else 'n'}"
                 f"{ef_part}"
+                f"{cf_part}"
             )
 
         run_folder = os.path.join(

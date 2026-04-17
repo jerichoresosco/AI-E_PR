@@ -4,7 +4,7 @@ import model.utils
 import logging
 from pprint import pprint
 import model.grid
-import model.utils_user_knn
+import model.utils_cf
 
 logger = logging.getLogger(__name__)
 
@@ -225,8 +225,19 @@ class User:
         if self.has_grid:
             self.grid.update_cell_value_given_position(self.position)
 
-    def make_decision_cf(self, neighbors):
-        model.utils_user_knn.make_decision_cf(self, neighbors)
+    def make_decision_cf(self, neighbors, cf_type="uk"):
+        """
+        CF variant of make_decision.
+
+        Parameters
+        ----------
+        neighbors : cf_type-specific structure
+            "uk" -> list of (User, similarity_weight)
+            "ik" -> list of (venue_row, score)
+        cf_type : str
+            "uk" (User-KNN) or "ik" (Item-KNN). Default "uk".
+        """
+        model.utils_cf.make_decision_cf(self, neighbors, cf_type)
         
 
     def exploring(self):
