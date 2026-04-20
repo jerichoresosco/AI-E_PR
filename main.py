@@ -40,11 +40,12 @@ def main():
         "grid" : True,
         "random_start": True,
         "epr_fraction": 0.3,      # fraction of 'time' run with pure EPR before CF (1.0 = pure EPR; 0 < x < 1 enables CF phase)
-        "cf_type": "ik",          # CF algorithm: "uk" = User-KNN, "ik" = Item-KNN
+        "cf_type": "mf",          # CF algorithm: "uk" = User-KNN, "ik" = Item-KNN, "mf" = Matrix Factorization
         "top_k": 10,              # number of similar neighbors used in CF phase
     }
 
     ##TOPK STILL NOT IN THE SAVING/PLOT PROCEDURE!!!!!1
+    ##LATENT FACTOR = 20 HARDCODED
 
     grid_params = {
         "cell_lenght": 21, #must be odd to have a central cell

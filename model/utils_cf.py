@@ -6,7 +6,7 @@ import model.utils
 
 logger = logging.getLogger(__name__)
 
-def make_decision_cf(user, neighbors,cf_type):
+def make_decision_cf(user, neighbors, cf_type):
 
     P_new = user.simulation.ro * user.num_distinct_venues ** (-user.simulation.gamma)
 
@@ -19,8 +19,11 @@ def make_decision_cf(user, neighbors,cf_type):
         elif cf_type == "ik":
             if not _ik_exploring(user, neighbors):
                 user.exploring()           # EPR fallback
+        elif cf_type == "mf":
+            if not _mf_exploring(user, neighbors):
+                user.exploring()           # EPR fallback
         else:
-            raise ValueError(f"Unknown cf_type '{cf_type}'. Expected 'uk' or 'ik'.")  
+            raise ValueError(f"Unknown cf_type '{cf_type}'. Expected 'uk', 'ik', or 'mf'.")
 
     _advance_clock(user)
 
@@ -35,7 +38,7 @@ def build_cf_data(users_list, top_k, cf_type,
     ----------
     users_list      : list of User
     top_k           : int  - max neighbors to retain per user
-    cf_type         : "uk" | "ik"
+    cf_type         : "uk" | "ik" | "mf"
     simulate_params : dict - used only for check/ folder naming
     grid_exists     : bool
     grid_params     : dict | None
@@ -53,8 +56,11 @@ def build_cf_data(users_list, top_k, cf_type,
     elif cf_type == "ik":
         return _build_ik_data(users_list, top_k, simulate_params,
                               grid_exists, grid_params, check_run_dir, interval_idx)
+    elif cf_type == "mf":
+        return _build_mf_data(users_list, top_k, simulate_params,
+                              grid_exists, grid_params, check_run_dir, interval_idx)
     else:
-        raise ValueError(f"Unknown cf_type '{cf_type}'. Expected 'uk' or 'ik'.")
+        raise ValueError(f"Unknown cf_type '{cf_type}'. Expected 'uk', 'ik', or 'mf'.")
 
 
 # =============================================================================
@@ -102,10 +108,9 @@ def _resolve_check_run_dir(check_run_dir, cf_type, simulate_params,
 # =============================================================================
 
 
-
 def _build_uk_data(users_list, top_k, simulate_params,
                    grid_exists, grid_params, check_run_dir, interval_idx):
-  
+
     n_users = len(users_list)
 
     # ------------------------------------------------------------------
@@ -247,11 +252,9 @@ def _uk_exploring(user, neighbors):
 # =============================================================================
 
 
-
-
 def _build_ik_data(users_list, top_k, simulate_params,
                    grid_exists, grid_params, check_run_dir, interval_idx):
-  
+
     n_users = len(users_list)
 
     # ------------------------------------------------------------------
@@ -381,6 +384,191 @@ def _ik_exploring(user, neighbors):
     valid = [(row, score) for row, score in neighbors if row[0] not in my_venues]
     if not valid:
         logger.warning(f"User {user.uid}: IK exploration – all recommended venues already visited.")
+        return False
+
+    rows   = [r for r, _ in valid]
+    scores = np.array([s for _, s in valid], dtype=float)
+    probs  = scores / scores.sum()
+
+    chosen_idx = np.random.choice(len(rows), p=probs)
+    chosen     = rows[chosen_idx]
+
+    user.state = "E"
+    user.num_distinct_venues += 1
+    user.next_position = (chosen[2], chosen[3])
+    user.destination   = chosen[0]
+    user._venue_index[user.destination] = len(user.venue_history)
+    user.delta_r = None
+    user.angle   = None
+    return True
+
+
+# =============================================================================
+# MATRIX FACTORIZATION  (cf_type = "mf")
+# =============================================================================
+
+
+def _build_mf_data(users_list, top_k, simulate_params,
+                   grid_exists, grid_params, check_run_dir, interval_idx,
+                   num_latent_factors=20):
+    """
+    Build MF-based recommendation lists for every user via truncated SVD.
+
+    The user-venue visit-count matrix is decomposed as:
+        M ≈ U_k · Σ_k · V_k^T
+
+    User factors  = U_k · Σ_k   (shape: n_users  x k)
+    Item factors  = V_k^T        (shape: n_venues x k, after transpose)
+
+    Predicted score for user u on venue v:
+        score(u, v) = user_factors[u] · item_factors[v]
+
+    For each user, unvisited venues are ranked by predicted score and the
+    top_k positive-score venues are stored as cf_neighbors, using the same
+    format as IK: list of (venue_row, score) tuples.
+
+    Parameters
+    ----------
+    num_latent_factors : int
+        Number of singular vectors to keep (k).  Automatically capped at
+        min(n_users, n_venues, num_latent_factors).
+    """
+    n_users = len(users_list)
+
+    # ------------------------------------------------------------------
+    # Collect all venues globally and build index + metadata
+    # ------------------------------------------------------------------
+    all_venues, venue_set = [], set()
+    for user in users_list:
+        for row in user.venue_history[1:]:
+            if row[0] not in venue_set:
+                venue_set.add(row[0])
+                all_venues.append(row[0])
+    venue_to_idx = {v: i for i, v in enumerate(all_venues)}
+    n_venues = len(all_venues)
+
+    venue_meta = {}
+    for user in users_list:
+        for row in user.venue_history[1:]:
+            if row[0] not in venue_meta:
+                venue_meta[row[0]] = (row[2], row[3])
+
+    # ------------------------------------------------------------------
+    # User–venue visit-count matrix  (rows = users, cols = venues)
+    # ------------------------------------------------------------------
+    uv_matrix = np.zeros((n_users, n_venues), dtype=float)
+    for ui, user in enumerate(users_list):
+        for row in user.venue_history[1:]:
+            uv_matrix[ui, venue_to_idx[row[0]]] = row[1]
+
+    # ------------------------------------------------------------------
+    # Truncated SVD
+    # np.linalg.svd returns the *full* decomposition; we take only the
+    # leading k components, which is equivalent to the truncated SVD and
+    # captures the dominant latent structure.
+    # ------------------------------------------------------------------
+    k = min(num_latent_factors, n_users, n_venues)
+    logger.info(f"Performing truncated SVD with k={k} latent factors...")
+
+    U, sigma, VT = np.linalg.svd(uv_matrix, full_matrices=False)
+    # U     : (n_users,  min(n_users, n_venues))
+    # sigma : (min(n_users, n_venues),)
+    # VT    : (min(n_users, n_venues), n_venues)
+
+    sigma_diag   = np.diag(sigma[:k])          # (k, k)
+    user_factors = U[:, :k] @ sigma_diag       # (n_users, k)
+    item_factors = VT[:k, :].T                 # (n_venues, k)
+
+    # ------------------------------------------------------------------
+    # Predicted rating matrix  (n_users × n_venues)
+    # ------------------------------------------------------------------
+    pred_matrix = user_factors @ item_factors.T   # (n_users, n_venues)
+
+    # ------------------------------------------------------------------
+    # Resolve check folder and persist factor norms for diagnostics
+    # ------------------------------------------------------------------
+    check_run_dir = _resolve_check_run_dir(
+        check_run_dir, "mf", simulate_params, grid_exists, grid_params
+    )
+    interval_label = interval_idx + 1
+
+    sigma_path = os.path.join(check_run_dir, f"singular_values_interval_{interval_label:02d}.txt")
+    np.savetxt(sigma_path, sigma[:k].reshape(1, -1), fmt="%.6f",
+               header=f"Top-{k} singular values")
+
+    # ------------------------------------------------------------------
+    # For each user, rank unvisited venues by predicted score, keep top_k
+    # ------------------------------------------------------------------
+    cf_neighbors = []
+    for ui, user in enumerate(users_list):
+        visited_mask = uv_matrix[ui] > 0
+
+        if not visited_mask.any():
+            logger.warning(f"User {ui} (MF): no visited venues – skipping recommendations.")
+            cf_neighbors.append([])
+            continue
+
+        scores = pred_matrix[ui].copy()        # (n_venues,)
+        scores[visited_mask] = 0.0             # mask already-visited venues
+
+        positive_mask = scores > 0
+        if not positive_mask.any():
+            logger.warning(f"User {ui} (MF): no positive-score unvisited venues.")
+            cf_neighbors.append([])
+            continue
+
+        pos_indices = np.where(positive_mask)[0]
+        k_sel = min(top_k, len(pos_indices))
+        top_indices = pos_indices[np.argsort(scores[pos_indices])[::-1]][:k_sel]
+
+        user_neighbors = []
+        for vi in top_indices:
+            vname = all_venues[vi]
+            x, y  = venue_meta[vname]
+            user_neighbors.append(([vname, 1, x, y], float(scores[vi])))
+        cf_neighbors.append(user_neighbors)
+
+    # ------------------------------------------------------------------
+    # Persist neighbor list for inspection
+    # ------------------------------------------------------------------
+    neighbors_path = os.path.join(check_run_dir, f"neighbors_interval_{interval_label:02d}.txt")
+    with open(neighbors_path, "w") as f:
+        for row in cf_neighbors:
+            f.write(",".join(str(entry) for entry in row) + "\n")
+
+    logger.info(
+        f"MF CF data built: {n_users} users, {n_venues} unique venues, "
+        f"k={k}, top_k={top_k}, interval={interval_label}"
+    )
+    return cf_neighbors, check_run_dir
+
+
+def _mf_exploring(user, neighbors):
+    """
+    MF exploration step.
+
+    Identical in mechanics to _ik_exploring: `neighbors` is a list of
+    (venue_row, score) tuples pre-computed by _build_mf_data, where
+    score is the predicted rating from the latent-factor model.
+
+    Venues are sampled proportionally to their predicted score, giving
+    higher-rated unvisited places a greater probability of selection.
+
+    Returns False to trigger EPR fallback when no valid venues remain.
+
+    On success sets: state="E", num_distinct_venues, next_position,
+    destination, _venue_index entry, delta_r=None, angle=None.
+    """
+    if not neighbors:
+        logger.warning(f"User {user.uid}: MF exploration skipped - no recommended venues.")
+        return False
+
+    my_venues = set(user._venue_index.keys())
+
+    # Filter out venues the user has visited since the last CF rebuild
+    valid = [(row, score) for row, score in neighbors if row[0] not in my_venues]
+    if not valid:
+        logger.warning(f"User {user.uid}: MF exploration - all recommended venues already visited.")
         return False
 
     rows   = [r for r, _ in valid]
