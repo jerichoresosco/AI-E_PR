@@ -201,6 +201,16 @@ def compute_stats(user_history_df):
     pd.DataFrame
         Two-column DataFrame with columns ['metric', 'value'].
     """
+    if len(user_history_df) == 0:
+        return pd.DataFrame([
+            {"metric": "x_center of mass",      "value": float("nan")},
+            {"metric": "y_center of mass",       "value": float("nan")},
+            {"metric": "x_center of mass two",   "value": float("nan")},
+            {"metric": "y_center of mass two",   "value": float("nan")},
+            {"metric": "radius of gyration",     "value": float("nan")},
+            {"metric": "radius of gyration two", "value": float("nan")},
+        ])
+
     x_traj = np.concatenate((user_history_df["Departure_x_coord"].values[0:1], user_history_df["Destination_x_coord"].values))
     y_traj = np.concatenate((user_history_df["Departure_y_coord"].values[0:1], user_history_df["Destination_y_coord"].values))
 
@@ -256,6 +266,9 @@ def compute_rg_over_time(user_history_df):
     y_vals = user_history_df["Destination_y_coord"].values
 
     n = len(x_vals)
+    if n == 0:
+        return pd.DataFrame({"clock": [], "rg": []})
+
     rg_values = np.empty(n)
 
     # Initialise with the starting point
@@ -400,7 +413,7 @@ def compute_collective_gini(venue_history_df_list):
     return compute_gini_coefficient(visit_counts)
 
 
-def load_parquet_folder(base_folder, filters, file_map, grid=False, return_run_folders=False, random_start=False, user_number=None):
+def load_parquet_folder(base_folder, filters, file_map, grid=False, return_run_folders=False, starting_position="centered", user_number=None):
     """
     Generic loader for per-user Parquet datasets stored under a parameter folder.
 
@@ -523,10 +536,10 @@ def load_parquet_folder(base_folder, filters, file_map, grid=False, return_run_f
         if grid != folder_has_grid:
             continue
 
-        # Scarta cartelle che non corrispondono alla modalità random_start richiesta
+        # Scarta cartelle che non corrispondono alla modalità starting_position richiesta
         if grid:
-            folder_has_rstart = converted.get("rs") == "y"
-            if folder_has_rstart != bool(random_start):
+            _sp_abbr = {"centered": "c", "random": "r", "normal": "n"}.get(starting_position, "c")
+            if converted.get("sp") != _sp_abbr:
                 continue
 
         if any(converted.get(key_map.get(fk, fk)) != fv
@@ -619,7 +632,7 @@ def load_raw_parquet(filters=None, grid = False, return_run_folders=False):
 
     user_number = filters.get("user_number", None)
     filters_clean = {k: v for k, v in filters.items()
-                 if v is not None and k not in ("user_number", "grid", "random_start")}
+                 if v is not None and k not in ("user_number", "grid", "starting_position")}
     project_root = os.path.dirname(os.path.dirname(
         os.path.abspath(inspect.getfile(inspect.currentframe()))
     ))
@@ -640,7 +653,7 @@ def load_raw_parquet(filters=None, grid = False, return_run_folders=False):
 
     loaded = load_parquet_folder(base_folder, filters_clean, file_map, grid=grid,
                                  return_run_folders=return_run_folders,
-                                 random_start=filters.get("random_start", False),
+                                 starting_position=filters.get("starting_position", "centered"),
                                  user_number=user_number)
     loaded = _apply_user_number_slice(loaded, user_number)
 
@@ -675,7 +688,7 @@ def load_analysis_parquet(filters=None, needed_files=None):
     user_number   = filters.get("user_number", None)
     grid          = filters.get("grid", False)
     filters_clean = {k: v for k, v in filters.items()
-                 if v is not None and k not in ("user_number", "grid", "random_start")}
+                 if v is not None and k not in ("user_number", "grid", "starting_position")}
 
     project_root = os.path.dirname(os.path.dirname(
         os.path.abspath(inspect.getfile(inspect.currentframe()))
@@ -707,7 +720,7 @@ def load_analysis_parquet(filters=None, needed_files=None):
         logger.info(f"Loading only: {sorted(needed_files)}")
 
     loaded = load_parquet_folder(base_folder, filters_clean, file_map, grid=grid,
-                                 random_start=filters.get("random_start", False),
+                                 starting_position=filters.get("starting_position", "centered"),
                                  user_number=user_number)
     loaded = _apply_user_number_slice(loaded, user_number)
 
@@ -831,15 +844,18 @@ def load_all_aggregate_grids(filters):
     ))
     base_folder = os.path.join(project_root, "analysis_data")
 
-    rstart = filters.get("random_start", False)
-    efrac  = float(filters.get("epr_fraction", 1.0))
+    sp    = filters.get("starting_position", "centered")
+    efrac = float(filters.get("epr_fraction", 1.0))
+    cf_type = filters.get("cf_type", None)
+    cf_part = f"_cf_{cf_type}" if (efrac < 1.0 and cf_type is not None) else ""
+    _sp_abbr = {"centered": "c", "random": "r", "normal": "n"}.get(sp, "c")
     param_folder_name = (
         f"ro_{filters['ro']}_g_{filters['gamma']}"
         f"_a_{filters['a_param']}_b_{filters['b_param']}_t_{filters['time']}"
     )
     if "cell_lenght" in filters and "cell_number" in filters:
         param_folder_name += f"_cl_{filters['cell_lenght']}_cn_{filters['cell_number']}"
-    param_folder_name += f"_rs_{'y' if rstart else 'n'}_ef_{efrac}"
+    param_folder_name += f"_sp_{_sp_abbr}_ef_{efrac}{cf_part}"
 
     param_folder = os.path.join(base_folder, param_folder_name)
     if not os.path.exists(param_folder):
@@ -890,7 +906,7 @@ def load_all_batch_stats(filters):
         Simulation parameter filters to identify the param folder.
         Standard keys: "ro", "gamma", "a_param", "b_param", "time".
         Grid keys (when applicable): "cell_lenght", "cell_number".
-        Optional: "random_start" (bool), "epr_fraction" (float).
+        Optional: "starting_position" (str), "epr_fraction" (float).
 
     Returns
     -------
@@ -904,15 +920,18 @@ def load_all_batch_stats(filters):
     ))
     base_folder = os.path.join(project_root, "analysis_data")
 
-    rstart = filters.get("random_start", False)
-    efrac  = float(filters.get("epr_fraction", 1.0))
+    sp    = filters.get("starting_position", "centered")
+    efrac = float(filters.get("epr_fraction", 1.0))
+    cf_type = filters.get("cf_type", None)
+    cf_part = f"_cf_{cf_type}" if (efrac < 1.0 and cf_type is not None) else ""
+    _sp_abbr = {"centered": "c", "random": "r", "normal": "n"}.get(sp, "c")
     param_folder_name = (
         f"ro_{filters['ro']}_g_{filters['gamma']}"
         f"_a_{filters['a_param']}_b_{filters['b_param']}_t_{filters['time']}"
     )
     if "cell_lenght" in filters and "cell_number" in filters:
         param_folder_name += f"_cl_{filters['cell_lenght']}_cn_{filters['cell_number']}"
-    param_folder_name += f"_rs_{'y' if rstart else 'n'}_ef_{efrac}"
+    param_folder_name += f"_sp_{_sp_abbr}_ef_{efrac}{cf_part}"
 
     param_folder = os.path.join(base_folder, param_folder_name)
     logger.info(f"load_all_batch_stats looking for: {param_folder}")

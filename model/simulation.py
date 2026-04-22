@@ -108,10 +108,10 @@ class Simulation:
         b_param      = simulate_params["b_param"]
         user_number  = simulate_params["user_number"]
         time         = simulate_params["time"]
-        grid_exists  = simulate_params["grid"]
+        grid_exists       = simulate_params["grid"]
         #Cambiare la gestione dei valori predefiniti negli attributi che seguono
-        random_start = simulate_params.get("random_start", False)
-        epr_fraction = simulate_params.get("epr_fraction", 1.0)
+        starting_position = simulate_params.get("starting_position", "centered")
+        epr_fraction      = simulate_params.get("epr_fraction", 1.0)
         top_k        = simulate_params.get("top_k", 10)
         cf_type      = simulate_params.get("cf_type", "uk")
 
@@ -129,13 +129,13 @@ class Simulation:
         self.b_param          = b_param
         self._simulate_params = simulate_params
         self.grid_exists      = grid_exists
-        self._random_start    = random_start
+        self._starting_position = starting_position
 
         if grid_exists == True:
             self._grid_params = grid_params
             self.grid_cell_lenght = grid_params["cell_lenght"]
             self.grid_cell_number = grid_params["cell_number"]
-            if random_start:
+            if starting_position in ("random", "normal"):
                 self._spatial_center = (self.grid_cell_lenght * self.grid_cell_number) / 2
 
         epr_time  = epr_fraction * time
@@ -149,12 +149,21 @@ class Simulation:
         # Phase 1: EPR
         # ---------------------------------------------------------------
         for i in range(user_number):
-            if grid_exists and random_start:
+            if grid_exists and starting_position == "random":
                 sc = self._spatial_center
                 init_pos = (
                     np.random.uniform(-sc, sc),
                     np.random.uniform(-sc, sc),
                 )
+            elif grid_exists and starting_position == "normal":
+                sc = self._spatial_center
+                sigma = sc / 3
+                def _sample(sc=sc, sigma=sigma):
+                    while True:
+                        v = np.random.normal(0, sigma)
+                        if -sc <= v <= sc:
+                            return float(v)
+                init_pos = (_sample(), _sample())
             else:
                 init_pos = None
 
@@ -394,7 +403,7 @@ class Simulation:
         ----------
         load_params : dict
             Standard simulation parameter keys: "ro", "gamma", "a_param",
-            "b_param", "time", "grid", "random_start" (optional).
+            "b_param", "time", "grid", "starting_position" (optional).
             Additional key:
                 "batch_id" (str, optional)
                     Exact timestamp folder name to load (e.g. "20240601_120000_123456").
@@ -424,9 +433,9 @@ class Simulation:
             self.grid_cell_lenght = grid_params["cell_lenght"]
             self.grid_cell_number = grid_params["cell_number"]
 
-        grid_exists  = load_params.get("grid", False)
-        random_start = load_params.get("random_start", False)
-        batch_id     = load_params.get("batch_id", None)
+        grid_exists       = load_params.get("grid", False)
+        starting_position = load_params.get("starting_position", "centered")
+        batch_id          = load_params.get("batch_id", None)
 
         # ------------------------------------------------------------------
         # Locate the parameter folder in raw_data/
@@ -435,9 +444,10 @@ class Simulation:
         base_folder  = os.path.join(project_root, "raw_data")
 
         efrac   = float(load_params.get("epr_fraction", 1.0))
-        rstart  = load_params.get("random_start", False)
+        sp      = load_params.get("starting_position", "centered")
         cf_type = load_params.get("cf_type", None)
         cf_part = f"_cf_{cf_type}" if (efrac < 1.0 and cf_type is not None) else ""
+        _sp_abbr = {"centered": "c", "random": "r", "normal": "n"}.get(sp, "c")
 
         if grid_exists and grid_params is not None:
             param_folder_name = (
@@ -445,7 +455,7 @@ class Simulation:
                 f"_a_{load_params['a_param']}_b_{load_params['b_param']}"
                 f"_t_{load_params['time']}"
                 f"_cl_{grid_params['cell_lenght']}_cn_{grid_params['cell_number']}"
-                f"_rs_{'y' if rstart else 'n'}"
+                f"_sp_{_sp_abbr}"
                 f"_ef_{efrac}"
                 f"{cf_part}"
             )
@@ -454,7 +464,7 @@ class Simulation:
                 f"ro_{load_params['ro']}_g_{load_params['gamma']}"
                 f"_a_{load_params['a_param']}_b_{load_params['b_param']}"
                 f"_t_{load_params['time']}"
-                f"_rs_{'y' if rstart else 'n'}"
+                f"_sp_{_sp_abbr}"
                 f"_ef_{efrac}"
                 f"{cf_part}"
             )
@@ -507,11 +517,11 @@ class Simulation:
         # ------------------------------------------------------------------
         # Restore simulation-level attributes needed by User objects
         # ------------------------------------------------------------------
-        self.ro          = load_params["ro"]
-        self.gamma       = load_params["gamma"]
-        self.a_param     = load_params["a_param"]
-        self.grid_exists = grid_exists
-        self._random_start = random_start
+        self.ro               = load_params["ro"]
+        self.gamma            = load_params["gamma"]
+        self.a_param          = load_params["a_param"]
+        self.grid_exists      = grid_exists
+        self._starting_position = starting_position
 
         if grid_exists and grid_params is not None:
             self.grid_cell_lenght = grid_params["cell_lenght"]
@@ -942,7 +952,7 @@ class Simulation:
         plot_params : dict
             Must contain: "ro", "gamma", "a_param", "b_param", "time".
             Optional: "user_number" (positive = first N, negative = last N, absent = all),
-            "grid" (bool), "random_start" (bool), "epr_fraction" (float).
+            "grid" (bool), "starting_position" (str), "epr_fraction" (float).
         grid_params : dict, optional
             When provided (and plot_params["grid"] is True), must contain
             "cell_lenght" and "cell_number". Merged into the filter dict passed
@@ -1123,7 +1133,7 @@ class Simulation:
                 model.utils_plot.plot_aggregate_grid(
                     self.aggregate_grid, filters=pg_with_n,
                     title=model.utils_plot.build_plot_title("Aggregate Grid", pg_with_n),
-                    mask_center= p["grid"] and not p.get("random_start", False),
+                    mask_center= p["grid"] and p.get("starting_position", "centered") == "centered",
                     show=self._show
                 )
             else:
@@ -1136,7 +1146,7 @@ class Simulation:
                         grid, filters=pg_with_n,
                         title=model.utils_plot.build_plot_title(f"Grid - {batch_id}", pg_with_n),
                         batch_id=batch_id,
-                        mask_center= p["grid"] and not p.get("random_start", False),
+                        mask_center= p["grid"] and p.get("starting_position", "centered") == "centered",
                         show=self._show
                     )
             else:
@@ -1172,7 +1182,7 @@ class Simulation:
         so that the folder-name parser in the data loaders can split on
         ``_`` and pair tokens unambiguously.
 
-        When a grid is active and ``random_start=True`` is present in
+        When a grid is active and ``starting_position="normal"`` is present in
         params, the suffix ``_rs_y`` is appended to distinguish
         random-origin runs from fixed-origin ones.
 
@@ -1189,7 +1199,7 @@ class Simulation:
             e.g. "raw_data" or "analysis_data".
         params : dict
             Must contain "ro", "gamma", "a_param", "b_param", "time".
-            Optional: "random_start" (bool), "epr_fraction" (float),
+            Optional: "starting_position" (str), "epr_fraction" (float),
             "cf_type" (str, only written when epr_fraction < 1.0).
         grid_params : dict, optional
             When provided, must contain "cell_lenght" and "cell_number".
@@ -1203,18 +1213,21 @@ class Simulation:
         base_folder  = os.path.join(project_root, data_type)
 
         efrac   = float(params.get("epr_fraction", 1.0))
-        rstart  = params.get("random_start", False)
+        sp      = params.get("starting_position", "centered")
         cf_type = params.get("cf_type", None)
 
         # Append cf_type only when a CF phase is actually present
         cf_part = f"_cf_{cf_type}" if (efrac < 1.0 and cf_type is not None) else ""
+
+        # Map starting_position to single-letter abbreviation: c / r / n
+        _sp_abbr = {"centered": "c", "random": "r", "normal": "n"}.get(sp, "c")
 
         if grid_params is None:
             param_folder = os.path.join(
                 base_folder,
                 f"ro_{params['ro']}_g_{params['gamma']}"
                 f"_a_{params['a_param']}_b_{params['b_param']}_t_{params['time']}"
-                f"_rs_{'y' if rstart else 'n'}"
+                f"_sp_{_sp_abbr}"
                 f"_ef_{efrac}"
                 f"{cf_part}"
             )
@@ -1224,7 +1237,7 @@ class Simulation:
                 f"ro_{params['ro']}_g_{params['gamma']}"
                 f"_a_{params['a_param']}_b_{params['b_param']}_t_{params['time']}"
                 f"_cl_{grid_params['cell_lenght']}_cn_{grid_params['cell_number']}"
-                f"_rs_{'y' if rstart else 'n'}"
+                f"_sp_{_sp_abbr}"
                 f"_ef_{efrac}"
                 f"{cf_part}"
             )
@@ -1276,7 +1289,7 @@ class Simulation:
         gamma   = base_params["gamma"]
         a_param = base_params["a_param"]
         b_param = base_params["b_param"]
-        rstart  = base_params.get("random_start", False)
+        sp      = base_params.get("starting_position", "centered")
 
         t0 = base_params["time"]
         t1 = resume_params["time"]
@@ -1294,13 +1307,15 @@ class Simulation:
         if ef1 < 1.0 and cf1 is not None:
             cf_part += f"_cf1_{cf1}"
 
+        _sp_abbr = {"centered": "c", "random": "r", "normal": "n"}.get(sp, "c")
+
         if grid_params is not None:
             param_folder_name = (
                 f"ro_{ro}_g_{gamma}"
                 f"_a_{a_param}_b_{b_param}"
                 f"_t0_{t0}_t1_{t1}"
                 f"_cl_{grid_params['cell_lenght']}_cn_{grid_params['cell_number']}"
-                f"_rs_{'y' if rstart else 'n'}"
+                f"_sp_{_sp_abbr}"
                 f"{ef_part}"
                 f"{cf_part}"
             )
@@ -1309,7 +1324,7 @@ class Simulation:
                 f"ro_{ro}_g_{gamma}"
                 f"_a_{a_param}_b_{b_param}"
                 f"_t0_{t0}_t1_{t1}"
-                f"_rs_{'y' if rstart else 'n'}"
+                f"_sp_{_sp_abbr}"
                 f"{ef_part}"
                 f"{cf_part}"
             )

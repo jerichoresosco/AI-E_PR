@@ -18,7 +18,7 @@ def main():
     # Choose mode
     # ==========================================================
 
-    mode = "sa"  # Options (short aliases):
+    mode = "p"  # Options (short aliases):
                         #   "s"     run simulation, save raw_data only
                         #   "a"    - load raw_data, compute & save analysis_data
                         #   "sa"   - simulate then analyse without reloading from disk
@@ -35,10 +35,10 @@ def main():
         "gamma": 0.2,
         "a_param": 0.75,
         "b_param": 0.6,
-        "user_number": 30,
+        "user_number": 10000,
         "time": 10000,
         "grid" : True,
-        "random_start": True,
+        "starting_position": "normal",   # "centered" | "random" | "normal"
         "epr_fraction": 0.3,      # fraction of 'time' run with pure EPR before CF (1.0 = pure EPR; 0 < x < 1 enables CF phase)
         "cf_type": "mf",          # CF algorithm: "uk" = User-KNN, "ik" = Item-KNN, "mf" = Matrix Factorization
         "top_k": 10,              # number of similar neighbors used in CF phase
@@ -65,7 +65,7 @@ def main():
         "b_param": 0.6,
         "time": 10000,
         "grid": True,
-        "random_start": True,   # must match the simulate_params value used
+        "starting_position": "normal",   # must match the simulate_params value used
     }
 
     # ----------------------------------------------------------
@@ -79,11 +79,11 @@ def main():
         "a_param": 0.75,
         "b_param": 0.6,
         "time": 10000,
-        "user_number": 30,       #For correct displaying
+        "user_number": 10000,       #For correct displaying
         "grid": True,
-        "random_start": True,
+        "starting_position": "normal",
         "epr_fraction": 0.3,
-        "cf_type": "uk",         # must match the simulate_params value used
+        "cf_type": "mf",         # must match the simulate_params value used
     }
 
     # ----------------------------------------------------------
@@ -105,7 +105,7 @@ def main():
         "b_param": 0.6,
         "time": 10000,            # time of the ORIGINAL simulation to load
         "grid": True,
-        "random_start": True,
+        "starting_position": "normal",
         "epr_fraction": 0.3,      # include only if the original run used CF
         "cf_type": "uk",          # must match the cf_type of the original run
         # "batch_id": "20240601_153012_004321",  # omit to use the most recent batch
@@ -128,7 +128,7 @@ def main():
         "b_param": 0.6,
         "time": 20000,            # absolute target: users will run until clock=20000
         "grid": True,
-        "random_start": True,
+        "starting_position": "normal",
         "epr_fraction": 0.3,      # 1.0 = pure EPR resume; <1.0 = EPR then CF
         "cf_type": "uk",          # CF algorithm for the resume phase: "uk" or "ik"
         "top_k": 10,
@@ -142,11 +142,11 @@ def main():
         #"s_over_time", 
         #"rg_over_time",
         #"aggregate_grid",   
-        #"batch_grid",  ##Problems in saving due to max lenght titole 260 characters
-        "batch_stats"     
+        "batch_grid",  ##Problems in saving due to max lenght titole 260 characters
+        #"batch_stats"     
     ]
 
-    show = False #if True only shows the plots, if False only saves them to disk
+    show = True #if True only shows the plots, if False only saves them to disk
 
     start_time = time.time()
     logger.info(f"Running mode: {mode}")
