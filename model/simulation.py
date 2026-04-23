@@ -114,6 +114,19 @@ class Simulation:
         top_k        = simulate_params["top_k"]
         cf_type      = simulate_params["cf_type"]
 
+        # When grid is disabled every user starts at (0,0) regardless of what
+        # starting_position says.  Normalise to "centered" before storing params
+        # so that the saved folder name reflects the actual simulation behaviour.
+        if not grid_exists and starting_position != "centered":
+            logger.warning(
+                f"run(): grid=False but starting_position='{starting_position}' — "
+                f"all users will start at (0,0). Overriding to 'centered' for folder naming."
+            )
+            starting_position = "centered"
+            simulate_params = {**simulate_params, "starting_position": "centered"}
+
+        logger.info(f"Starting position: '{starting_position}'")
+
         if epr_fraction <= 0:
             raise ValueError(
                 "epr_fraction must be > 0. At least some EPR data is required "
@@ -150,13 +163,13 @@ class Simulation:
         # Phase 1: EPR
         # ---------------------------------------------------------------
         for i in range(user_number):
-            if grid_exists and starting_position == "random":
+            if self._starting_position == "random":
                 sc = self._spatial_center
                 init_pos = (
                     np.random.uniform(-sc, sc),
                     np.random.uniform(-sc, sc),
                 )
-            elif grid_exists and starting_position == "normal":
+            elif self._starting_position == "normal":
                 sc = self._spatial_center
                 sigma = sc / 3
                 def _sample(sc=sc, sigma=sigma):
@@ -255,9 +268,10 @@ class Simulation:
         Parameters
         ----------
         simulate_params : dict
-            Must contain: "ro", "gamma", "a_param", "b_param", "time".
-            Optional: "epr_fraction" (float, default 1.0), "top_k" (int, default 10).
-            "user_number" is ignored: all users already in memory are continued.
+            Must contain: "ro", "gamma", "a_param", "b_param", "time",
+            "epr_fraction", "top_k", "cf_type".
+            "grid", "starting_position" and "user_number" must NOT be included:
+            grid and starting_position are inherited from the loaded simulation.
         grid_params : dict, optional
             When the simulation uses a grid, must contain "cell_lenght" and
             "cell_number".  When None (default) self._grid_params is reused
@@ -277,6 +291,15 @@ class Simulation:
         epr_fraction = simulate_params["epr_fraction"]
         top_k        = simulate_params["top_k"]
         cf_type      = simulate_params["cf_type"]
+
+        # grid and starting_position are inherited from the loaded simulation,
+        # not taken from simulate_params.
+        grid_exists       = self.grid_exists
+        starting_position = self._starting_position
+
+        # Inject into the params dict so that folder naming helpers (_make_run_folder,
+        # _make_combined_run_folder) have access to them via self._simulate_params.
+        simulate_params = {**simulate_params, "grid": grid_exists, "starting_position": starting_position}
 
         self.ro               = ro
         self.gamma            = gamma
@@ -436,9 +459,20 @@ class Simulation:
             self.grid_cell_lenght = grid_params["cell_lenght"]
             self.grid_cell_number = grid_params["cell_number"]
 
-        grid_exists       = load_params.get("grid", False)
-        starting_position = load_params.get("starting_position", "centered")
+        grid_exists       = load_params["grid"]
+        starting_position = load_params["starting_position"]
         batch_id          = load_params.get("batch_id", None)
+
+        # When grid is disabled starting_position has no effect; normalise to
+        # "centered" so the folder lookup matches what run() would have saved.
+        if not grid_exists and starting_position != "centered":
+            logger.warning(
+                f"_reconstruct_users_from_raw(): grid=False but "
+                f"starting_position='{starting_position}' — overriding to 'centered' "
+                f"for folder lookup."
+            )
+            starting_position = "centered"
+            load_params = {**load_params, "starting_position": "centered"}
 
         # ------------------------------------------------------------------
         # Locate the parameter folder in raw_data/
@@ -446,9 +480,9 @@ class Simulation:
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         base_folder  = os.path.join(project_root, "raw_data")
 
-        efrac   = float(load_params.get("epr_fraction", 1.0))
-        sp      = load_params.get("starting_position", "centered")
-        cf_type = load_params.get("cf_type", None)
+        efrac   = float(load_params["epr_fraction"])
+        sp      = load_params["starting_position"]
+        cf_type = load_params["cf_type"]
         cf_part = f"_cf_{cf_type}" if (efrac < 1.0 and cf_type is not None) else ""
         _sp_abbr = {"centered": "c", "random": "r", "normal": "n"}.get(sp, "c")
 
