@@ -5,6 +5,8 @@ from matplotlib.colors import LogNorm
 import os
 import inspect
 import scipy.stats
+from libpysal.weights import lat2W
+from esda.moran import Moran
 
 import logging
 logger = logging.getLogger(__name__)
@@ -100,90 +102,6 @@ def temporal_power_law_sampling( par = 0.8, min_val = 1, max_val = 61200, n_samp
     #logger.info("Temporal sampling...")
     return power_law_sampling(par = par, min_val = min_val, max_val = max_val, n_samples = n_samples)
 
-
-def filepath_save_plot_or_show(folder = "test_plots", name: str = None, filters: dict = None, show = False):
-    """
-    Save function for plots (pdf format), which can be saved in different folders of the project.
-    The name of the plot, if not passed, is automatically assigned as the name of the calling 
-    function through the package 'inspect'
-
-    Parameters:
-    ----------
-    folder : string, optional (default = "test_plots")
-        name of the target folder. The folder must be in AI-E_PR folder.
-    name : string, optional (default = None)
-        name of the plot figure. If not passed the name of the calling function
-        (the function which is calling 'filepath_save_plot', will be the name of the plot)
-    filters : dict, optional (default = None)
-        Dictionary of filters to be included in the plot name.
-
-    Returns:
-    --------
-    None
-        This function only produces plots for visual inspection and does not
-        return any value.
-    """
-    if show:
-        plt.show()
-    else:
-
-        # if name is not given, the calling function name is used instead
-        if name is None:
-            name = inspect.stack()[1].function
-
-        # base folder 
-        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        
-        # folder where plots will be saved
-        plots_dir = os.path.join(base_dir, f"{folder}")
-        os.makedirs(plots_dir, exist_ok=True)
-
-        filters = ", ".join(f"{k}={v}" for k, v in filters.items())
-        filename = f"{name}_{filters}.pdf"
-        filepath = os.path.join(plots_dir, filename)
-
-        plt.tight_layout()
-        plt.savefig(filepath)
-        plt.close()
-
-def build_plot_title(base_title, filters):
-    """
-    Build a plot title by combining a base title with simulation parameters.
-
-    This function constructs a descriptive title for plots by appending loading
-    parameters in a formatted string, using abbreviated parameter names.
-
-    Parameters
-    ----------
-    base_title : str
-        The base title for the plot.
-    filters : dict
-        Dictionary of filters to include in the title.
-
-    Returns
-    -------
-    str
-        The constructed title string.
-    """
-    _PARAM_ABBREV = {
-        "ro":           "ρ",
-        "gamma":        "γ",
-        "a_param":      "a",
-        "b_param":      "b",
-        "time":         "t",
-        "user_number":  "u_n",
-        "cell_lenght":  "c_len",
-        "cell_number":  "c_num",
-        "grid":         "grid",
-        "random_start": "r_s",
-    }
-    if not filters:
-        return base_title
-
-    param_str = ", ".join(f"{_PARAM_ABBREV.get(k, k)}={v}" for k, v in filters.items())
-    return f"{base_title} ({param_str})"
-        
-
 def polar_to_cartesian (delta_r, angle, position=(0,0)):
     """
     Convert polar coordinates to Cartesian coordinates.
@@ -262,68 +180,6 @@ def get_trajectory_arrays(user, k_top=None):
     return np.array(x_traj), np.array(y_traj)
 
 
-def dotted_histogram(numpy_array, bins_per_decade=4):
-    """
-    Compute a logarithmic histogram with density normalization.
-
-    This function creates logarithmically spaced bins for the input array,
-    computes frequencies, and normalizes to density. It filters out zero values
-    and returns only bins with positive density.
-
-    Parameters
-    ----------
-    numpy_array : array-like
-        Input array of values to histogram (must be positive).
-    bins_per_decade : int, optional (default=4)
-        Number of bins per decade for logarithmic spacing.
-
-    Returns
-    -------
-    centers_filtered : np.ndarray
-        Geometric centers of the bins with positive density.
-    density_filtered : np.ndarray
-        Normalized density values for the bins.
-    """
-    array = numpy_array[numpy_array > 0]   # avoiding zeros
-
-    min_array = array.min()
-    max_array = array.max()
-
-    log_min = np.log10(min_array)
-    log_max = np.log10(max_array)
-
-    #Avoiding boundary problems using a margin
-    margin = 0.05
-    log_min -= margin
-    log_max += margin
-
-    num_decades = log_max - log_min
-    num_bins = int(np.ceil(num_decades * bins_per_decade))
-
-    # Creation of logarithmic bins
-    bins = np.logspace(log_min, log_max, num_bins + 1)
-
-    # frequencies
-    counts, edges = np.histogram(array, bins=bins)
-
-    # bin logarithmic center
-    centers = np.sqrt(edges[:-1] * edges[1:])
-
-    # normailization
-    widths = np.diff(edges)
-    density = counts / widths / len(array)
-
-    mask = density > 0 #Avoiding zero density bins 
-    centers_filtered = centers[mask]
-    density_filtered = density[mask]
-
-    return centers_filtered, density_filtered
-
-
-# =============================================================================
-# ANALYSIS COMPUTATION FUNCTIONS
-# =============================================================================
-
 def compute_stats(user_history_df):
     """
     Compute trajectory statistics from a user_history DataFrame.
@@ -345,6 +201,16 @@ def compute_stats(user_history_df):
     pd.DataFrame
         Two-column DataFrame with columns ['metric', 'value'].
     """
+    if len(user_history_df) == 0:
+        return pd.DataFrame([
+            {"metric": "x_center of mass",      "value": float("nan")},
+            {"metric": "y_center of mass",       "value": float("nan")},
+            {"metric": "x_center of mass two",   "value": float("nan")},
+            {"metric": "y_center of mass two",   "value": float("nan")},
+            {"metric": "radius of gyration",     "value": float("nan")},
+            {"metric": "radius of gyration two", "value": float("nan")},
+        ])
+
     x_traj = np.concatenate((user_history_df["Departure_x_coord"].values[0:1], user_history_df["Destination_x_coord"].values))
     y_traj = np.concatenate((user_history_df["Departure_y_coord"].values[0:1], user_history_df["Destination_y_coord"].values))
 
@@ -400,6 +266,9 @@ def compute_rg_over_time(user_history_df):
     y_vals = user_history_df["Destination_y_coord"].values
 
     n = len(x_vals)
+    if n == 0:
+        return pd.DataFrame({"clock": [], "rg": []})
+
     rg_values = np.empty(n)
 
     # Initialise with the starting point
@@ -454,8 +323,7 @@ def compute_s_over_time(user_history_df):
 
 def compute_gini_coefficient(visit_counts):
     """
-    Compute the Gini coefficient for a distribution of visit counts,
-    following Equation 1 in Pedreschi et al.:
+    Compute the Gini coefficient for a distribution of visit counts:
 
         G = (1/|V|) * (|V| + 1 - 2 * (∑_{i=1}^{|V|} (|V|+1-i) * x_i) / ∑ x_i)
 
@@ -492,29 +360,31 @@ def compute_gini_coefficient(visit_counts):
     return (1.0 / n) * (n + 1 - 2.0 * weighted_sum / total)
 
 
-def compute_individual_gini(venue_history_df):
+def compute_individual_gini(venue_history_df_list):
     """
-    Compute the individual Gini coefficient for a single user.
+    Compute the individual Gini coefficient for a list of users.
 
     Applies :func:`compute_gini_coefficient` to the per-venue visit counts
-    recorded in the user's venue history (Equation 1 in Pedreschi et al.,
-    restricted to the visits made by this user).
+    recorded in each user's venue history (Equation 1 in Pedreschi et al.,
+    restricted to the visits made by each user).
 
     Parameters
     ----------
-    venue_history_df : pd.DataFrame
-        User venue history with at least a 'Number of visits' column.
+    venue_history_df_list : list of pd.DataFrame
+        List of DataFrames containing venue history for each user, with at least a 'Number of visits' column.
 
     Returns
     -------
     float
         Individual Gini coefficient in [0, 1].
     """
-    visit_counts = venue_history_df["Number of visits"].values
-    return compute_gini_coefficient(visit_counts)
+
+    values = [compute_gini_coefficient(df['Number of visits'].values) for df in venue_history_df_list]
+    mean = sum(values) / len(values)
+    return mean
 
 
-def compute_collective_gini(collective_venue_counts):
+def compute_collective_gini(venue_history_df_list):
     """
     Compute the collective Gini coefficient over the entire dataset.
 
@@ -524,23 +394,26 @@ def compute_collective_gini(collective_venue_counts):
 
     Parameters
     ----------
-    collective_venue_counts : dict
-        Mapping {venue_name: total_visit_count} aggregated across all users.
+    venue_history_df_list : list of pd.DataFrame
+        List of DataFrames containing venue history for each user, with at least a 'Number of visits' column.
 
     Returns
     -------
     float
         Collective Gini coefficient in [0, 1].
     """
+
+    #First compute the aggregate visit counts per venue across all users
+    collective_venue_counts = (pd.concat(venue_history_df_list)
+                    .groupby("Venue_name")["Number of visits"]
+                    .sum()
+                    .to_dict())
+
     visit_counts = list(collective_venue_counts.values())
     return compute_gini_coefficient(visit_counts)
 
 
-# =============================================================================
-# LOADERS
-# =============================================================================
-
-def load_parquet_folder(base_folder, filters, file_map, grid=False, return_run_folders=False, random_start=False, user_number=None):
+def load_parquet_folder(base_folder, filters, file_map, grid=False, return_run_folders=False, starting_position="centered", user_number=None):
     """
     Generic loader for per-user Parquet datasets stored under a parameter folder.
 
@@ -610,22 +483,22 @@ def load_parquet_folder(base_folder, filters, file_map, grid=False, return_run_f
     if grid == True:
         key_map = {
             "ro":           "ro",
-            "gamma":        "gamma",
+            "gamma":        "g",
             "a_param":      "a",
             "b_param":      "b",
-            "time":         "time",
-            "cell_lenght":  "clen",
-            "cell_number":  "cnum",
-            "epr_fraction": "efrac",
+            "time":         "t",
+            "cell_lenght":  "cl",
+            "cell_number":  "cn",
+            "epr_fraction": "ef",
         }
     elif grid == False:
         key_map = {
             "ro":           "ro",
-            "gamma":        "gamma",
+            "gamma":        "g",
             "a_param":      "a",
             "b_param":      "b",
-            "time":         "time",
-            "epr_fraction": "efrac",
+            "time":         "t",
+            "epr_fraction": "ef",
         }
 
     primary_suffix = next(iter(file_map.values()))
@@ -647,7 +520,7 @@ def load_parquet_folder(base_folder, filters, file_map, grid=False, return_run_f
 
         converted = {}
         for k, v in raw_params.items():
-            if k == "time":
+            if k == "t":
                 try:
                     converted[k] = int(v)
                 except ValueError:
@@ -659,14 +532,14 @@ def load_parquet_folder(base_folder, filters, file_map, grid=False, return_run_f
                     converted[k] = v
 
         # Scarta cartelle che non corrispondono alla modalità grid richiesta
-        folder_has_grid = "clen" in converted and "cnum" in converted
+        folder_has_grid = "cl" in converted and "cn" in converted
         if grid != folder_has_grid:
             continue
 
-        # Scarta cartelle che non corrispondono alla modalità random_start richiesta
+        # Scarta cartelle che non corrispondono alla modalità starting_position richiesta
         if grid:
-            folder_has_rstart = converted.get("rstart") == "yes"
-            if folder_has_rstart != bool(random_start):
+            _sp_abbr = {"centered": "c", "random": "r", "normal": "n"}.get(starting_position, "c")
+            if converted.get("sp") != _sp_abbr:
                 continue
 
         if any(converted.get(key_map.get(fk, fk)) != fv
@@ -759,8 +632,7 @@ def load_raw_parquet(filters=None, grid = False, return_run_folders=False):
 
     user_number = filters.get("user_number", None)
     filters_clean = {k: v for k, v in filters.items()
-                 if v is not None and k not in ("user_number", "grid", "random_start")
-                 and not (k == "epr_fraction" and v == 1)}
+                 if v is not None and k not in ("user_number", "grid", "starting_position")}
     project_root = os.path.dirname(os.path.dirname(
         os.path.abspath(inspect.getfile(inspect.currentframe()))
     ))
@@ -781,7 +653,7 @@ def load_raw_parquet(filters=None, grid = False, return_run_folders=False):
 
     loaded = load_parquet_folder(base_folder, filters_clean, file_map, grid=grid,
                                  return_run_folders=return_run_folders,
-                                 random_start=filters.get("random_start", False),
+                                 starting_position=filters.get("starting_position", "centered"),
                                  user_number=user_number)
     loaded = _apply_user_number_slice(loaded, user_number)
 
@@ -816,8 +688,7 @@ def load_analysis_parquet(filters=None, needed_files=None):
     user_number   = filters.get("user_number", None)
     grid          = filters.get("grid", False)
     filters_clean = {k: v for k, v in filters.items()
-                 if v is not None and k not in ("user_number", "grid", "random_start")
-                 and not (k == "epr_fraction" and v == 1)}
+                 if v is not None and k not in ("user_number", "grid", "starting_position")}
 
     project_root = os.path.dirname(os.path.dirname(
         os.path.abspath(inspect.getfile(inspect.currentframe()))
@@ -849,7 +720,7 @@ def load_analysis_parquet(filters=None, needed_files=None):
         logger.info(f"Loading only: {sorted(needed_files)}")
 
     loaded = load_parquet_folder(base_folder, filters_clean, file_map, grid=grid,
-                                 random_start=filters.get("random_start", False),
+                                 starting_position=filters.get("starting_position", "centered"),
                                  user_number=user_number)
     loaded = _apply_user_number_slice(loaded, user_number)
 
@@ -874,386 +745,7 @@ def _apply_user_number_slice(loaded, user_number):
         return loaded
     if user_number > 0:
         return loaded[:user_number]
-    return loaded[user_number:]   # negative → last N
-
-
-# =============================================================================
-# PLOT FUNCTIONS
-# =============================================================================
-
-def plot_mobility_visualization(user_history, venue_history, stats = None, filters = None, title = None, show = False):
-    logger.info("Plotting mobility visualization")
-    """
-    Visualizes the user mobility trajectory and visited venues.
-
-    Parameters
-    ----------
-    user_history : pandas.DataFrame
-        DataFrame containing the user's trajectory with columns including 'Destination_x_coord',
-        'Destination_y_coord', and 'Clock'.
-    venue_history : pandas.DataFrame
-        DataFrame containing visited venues with columns 'Venue_x_coord', 'Venue_y_coord',
-        and 'Number of visits'.
-    filters : dict, optional
-        Dictionary of filters to be included in the plot title.
-        If provided, the center of mass and radius of gyration are plotted.
-    title : str, optional
-        Title for the plot.
-    
-    Returns
-    -------
-    None
-    """
-
-
-    x = venue_history["Venue_x_coord"].to_numpy()
-    y = venue_history["Venue_y_coord"].to_numpy()
-    num_visits = venue_history["Number of visits"].to_numpy()
-    x_traj = user_history["Destination_x_coord"].to_numpy()
-    y_traj = user_history["Destination_y_coord"].to_numpy()
-    # Adding starting position
-    x_traj, y_traj = np.insert(x_traj, 0, 0), np.insert(y_traj, 0, 0)
-
-    _, ax = plt.subplots()
-
-    # Normalize number of visits for colormap
-    norm = plt.Normalize(num_visits.min(), num_visits.max())
-    cmap = plt.cm.viridis  # Most used color scale
-    sc = ax.scatter(x, y, s=10, c=num_visits, cmap=cmap, norm=norm, alpha=0.8)
-    plt.colorbar(sc, ax=ax, label='Number of visits')
-    ax.plot(x_traj, y_traj, color='red', linewidth=1, alpha=0.7)
-
-    if stats is not None:
-        r_gyr = stats.query('metric == "radius of gyration"')['value'].iloc[0]
-        cm_x = stats.query('metric == "x_center of mass"')['value'].iloc[0]
-        cm_y = stats.query('metric == "y_center of mass"')['value'].iloc[0]
-
-        ax.scatter(cm_x,cm_y, marker='x', c="purple", alpha=0.6, s=50, zorder=3)
-        circle = plt.Circle(
-            (cm_x, cm_y),
-            r_gyr,
-            facecolor=(0.6, 0, 0.8, 0.2),
-            edgecolor=(0.4, 0, 0.6, 0.8), 
-            linewidth=2
-        )
-        ax.add_patch(circle) 
-
-    ax.set_xlabel("X")
-    ax.set_ylabel("Y")
-    if title:
-        ax.set_title(title,fontsize=7)
-
-    filepath_save_plot_or_show("plots", filters=filters, show=show)
-
-
-def plot_rg_distribution(rg_list, filters = None, title=None, show=False):
-    logger.info("Plotting rg distribution")
-    """
-    Plot the distribution of radius of gyration values on a log-log scale.
-
-    This function creates a histogram of the radius of gyration (rg) values using
-    logarithmic binning and plots the density on a log-log scale. It filters out
-    zero values and uses a dotted histogram approach for better visualization.
-
-    Parameters
-    ----------
-    rg_list : list or array-like
-        List of radius of gyration values to plot.
-    filters : dict, optional
-        Dictionary of filters to be included in the plot title.
-    title : str, optional (default=None)
-        Title for the plot. If None, no title is set.
-
-    Returns
-    -------
-    None
-        The function generates and saves a plot but does not return any value.
-    """
-
-    rg_array = np.array(rg_list)
-    centers_filtered, density_filtered = dotted_histogram(rg_array)
-     
-    #counts_filtered = counts[mask]
-    #widths_filtered = widths[mask]
-
-    #print(f"\nNumero totale di punti: {len(rg_array)}")
-    #print(f"Numero di bin con dati: {len(centers_filtered)}")
-    #print("\nDettagli bin:")
-    #for i in range(len(centers_filtered)):
-        #print(f"Bin {i+1}: center={centers_filtered[i]:.2f}, "
-          #f"counts={counts_filtered[i]}, "
-          #f"width={widths_filtered[i]:.2f}, "
-          #f"density={density_filtered[i]:.4f}")
-
-    plt.loglog(centers_filtered, density_filtered, "o", markersize=5)
-
-    plt.figure(figsize=(8, 6))
-    plt.loglog(centers_filtered, density_filtered, "o", markersize=5)
-
-    plt.xlabel("Radius of gyration")
-    plt.ylabel("Density")
-    if title:
-        plt.title(title, fontsize=7)
-
-    plt.grid(True, linestyle="--", alpha=0.4)
-    plt.tight_layout()
-    filepath_save_plot_or_show("plots", filters=filters, show=show)
-
-def plot_frequency_distribution(venue_history_list, gamma, filters=None, title=None, show=False):
-
-    logger.info("Plotting frequency distribution (averaged across users)")
-    """
-    Plot the rank-frequency distribution of venue visits averaged across all users.
-
-    For each user the venues are ranked in descending order of visit count.
-    The visit counts at each rank are then averaged across all users that have
-    at least that many venues, producing a single mean curve.  A power-law fit
-    line is overlaid for comparison.
-
-    Parameters
-    ----------
-    venue_history_list : list of pandas.DataFrame or pandas.DataFrame
-        One DataFrame per user, each containing a 'Number of visits' column.
-        A bare DataFrame is accepted for backward compatibility (treated as a
-        single-user list).
-    gamma : float
-        Exponent for the power-law fit line (f(x) = x^(-1-gamma)).
-    filters : dict, optional
-        Dictionary of filters to be included in the plot title.
-    title : str, optional (default=None)
-        Title for the plot. If None, no title is set.
-
-    Returns
-    -------
-    None
-        The function generates and saves a plot but does not return any value.
-    """
-    # Accept a single DataFrame for backward compatibility
-    if isinstance(venue_history_list, pd.DataFrame):
-        venue_history_list = [venue_history_list]
-
-    # Collect visit counts per rank across all users
-    rank_visits = {}   # rank (1-based) -> list of visit counts
-    for vh in venue_history_list:
-        sorted_visits = vh['Number of visits'].sort_values(ascending=False).values
-        for rank, visits in enumerate(sorted_visits, start=1):
-            rank_visits.setdefault(rank, []).append(visits)
-            #created a dict where the key is the rank and the value is a list of visit counts for that rank across users
-
-    ranks     = np.array(sorted(rank_visits.keys()))
-    avg_visits = np.array([np.mean(rank_visits[r]) for r in ranks])
-
-    plt.figure(figsize=(8, 6))
-    plt.scatter(ranks, avg_visits, color='blue', label='avg data', s=50)
-
-    x_fit = np.linspace(ranks.min(), ranks.max(), 100)
-    y_fit = x_fit ** (-1 - gamma)
-    y_fit = y_fit * avg_visits.max() / y_fit.max()   # scale to same maximum
-    plt.plot(x_fit, y_fit, color='red', linestyle='--', label=r'$f(x) = x^{-1-\gamma}$')
-
-    plt.xscale('log')
-    plt.yscale('log')
-    plt.xlabel("Rank")
-    plt.ylabel("Average frequency")
-    if title:
-        plt.title(title, fontsize=7)
-    plt.grid(True, linestyle='--', alpha=0.3)
-    plt.legend()
-    filepath_save_plot_or_show("plots", filters=filters, show=show)
-
-def plot_two_radius_vs_radius(rg_list, two_rg_list, filters = None, title = None, show = False):
-
-    logger.info("Plotting 2-radius vs radius of gyration")
-    """
-    Plot the relationship between radius of gyration and 2-radius of gyration.
-
-    This function creates a scatter plot comparing the standard radius of gyration
-    with the 2-radius of gyration for a set of data points.
-
-    Parameters
-    ----------
-    rg_list : list or array-like
-        List of radius of gyration values.
-    two_rg_list : list or array-like
-        List of 2-radius of gyration values.
-    filters : dict, optional
-        Dictionary of filters to be included in the plot title.
-    title : str, optional (default=None)
-        Title for the plot. If None, no title is set.
-
-    Returns
-    -------
-    None
-        The function generates and saves a plot but does not return any value.
-    """
-
-    plt.figure(figsize=(8, 6))
-    plt.scatter(rg_list, two_rg_list,s=5)
-    plt.xlabel("Radius of Gyration")
-    plt.ylabel("2-Radius of Gyration")
-    if title:
-        plt.title(title,fontsize=7)
-    filepath_save_plot_or_show("plots", filters = filters, show=show)
-
-def plot_S_over_time_from_df(s_over_time_list, filters=None, title=None, bins_per_decade=4, show=False):
-    """
-    Plot the radius of gyration over time as a percentage of each user's final
-    (maximum) rg value, averaged across all users.
-
-    For every log-spaced sample time T, each user contributes the rg value
-    recorded at the last event with clock ≤ T (last-before rule), divided by
-    their own maximum rg.  The per-user percentages are then averaged to obtain
-    the mean fractional progress toward the final rg.
-
-    Parameters
-    ----------
-    rg_over_time_list : list of pd.DataFrame
-        Each DataFrame has columns ['clock', 'rg'].
-    filters : dict, optional
-        Used for the plot file name.
-    title : str, optional
-        Plot title.
-    bins_per_decade : int, optional
-        Number of log-spaced sample points per decade of time (default 4).
-        The maximum clock value is always included as the last sample point.
-    """
-    logger.info("Plotting S over time (from analysis data)")
-
-    if not s_over_time_list:
-        logger.warning("No S-over-time data available to plot")
-        return
-
-    # Build log-spaced sample times spanning all users.
-    all_clocks = np.concatenate([df["clock"].values for df in s_over_time_list])
-    min_c, max_c = all_clocks.min(), all_clocks.max()
-    log_min = np.log10(min_c)
-    log_max = np.log10(max_c)
-    num_samples = max(2, int(round((log_max - log_min) * bins_per_decade)))
-    sample_times = np.logspace(log_min, log_max, num_samples)
-    # Force exact max to avoid floating-point near-misses (10**log10(x) ≠ x)
-    sample_times[-1] = max_c
-
-    # For each sample time collect the normalised rg from every user
-    pct_by_time = {t: [] for t in sample_times}
-
-    for df in s_over_time_list:
-        clocks = df["clock"].values
-        s = df["s"].values
-        idx_s1 = np.where(s >= 1.0)[0]
-        if len(idx_s1) == 0:
-            continue
-        t_reach_1 = clocks[idx_s1[0]]
-
-        for t in sample_times:
-            if t < t_reach_1:
-                continue
-            # Ultimo record prima di t (last-before rule)
-            mask = clocks <= t
-            idx = int(np.where(mask)[0][-1])
-            pct_by_time[t].append(s[idx])
-
-    # Average across users for each sample time
-    sample_t_plot = []
-    avg_pct_plot  = []
-    for t in sample_times:
-        vals = pct_by_time[t]
-        if vals:
-            sample_t_plot.append(t)
-            avg_pct_plot.append(np.mean(vals))
-
-    plt.figure(figsize=(8, 5))
-    plt.scatter(sample_t_plot, avg_pct_plot, marker='o')
-    plt.xscale("log")
-    plt.yscale("log")
-    plt.xlabel("Clock")
-    plt.ylabel("S(t)")
-    plt.grid(True, which="both", ls="--", alpha=0.5)
-    if title:
-        plt.title(title, fontsize=7)
-
-    filepath_save_plot_or_show(folder="plots", filters=filters, show=show)
-
-
-def plot_r_gyr_over_time_from_df(rg_over_time_list, filters=None, title=None, bins_per_decade=4, show=False):
-    """
-    Plot the radius of gyration over time as a percentage of each user's final
-    (maximum) rg value, averaged across all users.
-
-    For every log-spaced sample time T, each user contributes the rg value
-    recorded at the last event with clock ≤ T (last-before rule), divided by
-    their own final rg. Users are included **only after their rg becomes non-zero**.
-
-    Parameters
-    ----------
-    rg_over_time_list : list of pd.DataFrame
-        Each DataFrame has columns ['clock', 'rg'].
-    filters : dict, optional
-        Used for the plot file name.
-    title : str, optional
-        Plot title.
-    bins_per_decade : int, optional
-        Number of log-spaced sample points per decade of time (default 4).
-        The maximum clock value is always included as the last sample point.
-    """
-    logger.info("Plotting r_gyr over time (normalized percentage, from analysis data)")
-
-    if not rg_over_time_list:
-        logger.warning("No rg-over-time data available to plot")
-        return
-
-    # Build log-spaced sample times spanning all users.
-    all_clocks = np.concatenate([df["clock"].values for df in rg_over_time_list])
-    min_c, max_c = all_clocks.min(), all_clocks.max()
-    log_min = np.log10(min_c)
-    log_max = np.log10(max_c)
-    num_samples = max(2, int(round((log_max - log_min) * bins_per_decade)))
-    sample_times = np.logspace(log_min, log_max, num_samples)
-    # Force exact max to avoid floating-point near-misses (10**log10(x) ≠ x)
-    sample_times[-1] = max_c 
-
-    # For each sample time collect the normalized rg from each user
-    pct_by_time = {t: [] for t in sample_times}
-
-    for df in rg_over_time_list:
-        clocks = df["clock"].values
-        rg = df["rg"].values
-
-        idx_start = np.where(rg > 0)[0]
-        if len(idx_start) == 0:
-            continue
-        t_start = clocks[idx_start[0]]
-        final_rg = rg[-1]
-        if final_rg == 0:
-            logger.warning("Final rg is 0 despite rg > 0 earlier, skipping user")
-            continue
-
-        for t in sample_times:
-            if t < t_start:
-                continue  
-            mask = clocks <= t
-            idx = int(np.where(mask)[0][-1])
-            pct_by_time[t].append(rg[idx] / final_rg * 100.0)
-
-    # Average across users
-    sample_t_plot = []
-    avg_pct_plot = []
-    for t in sample_times:
-        vals = pct_by_time[t]
-        if vals:
-            sample_t_plot.append(t)
-            avg_pct_plot.append(np.mean(vals))
-
-    plt.figure(figsize=(8, 5))
-    plt.scatter(sample_t_plot, avg_pct_plot, marker='o')
-    plt.xscale("log")
-    plt.xlabel("Clock")
-    plt.ylabel(r"$r_g(t)\,/\,r_g^{last}$ [%]")
-    plt.grid(True, which="both", ls="--", alpha=0.5)
-    if title:
-        plt.title(title, fontsize=7)
-
-    filepath_save_plot_or_show(folder="plots", filters=filters, show=show)
-    
+    return loaded[user_number:]   # negative → last N 
 
 def compute_and_save_aggregate_grid(analysis_folder):
     """
@@ -1275,6 +767,14 @@ def compute_and_save_aggregate_grid(analysis_folder):
     analysis_folder : str
         Path to the timestamped batch run folder produced by run_analysis()
         (e.g. analysis_data/ro_0.1_.../20260310_160442_960747/).
+
+    Returns
+    -------
+    batch_agg : pd.DataFrame
+        The batch-level aggregate grid (sum over all users in analysis_folder).
+    param_agg : pd.DataFrame or None
+        The param-level aggregate grid (sum over all batch aggregates in the
+        parent param folder). None if no batch aggregates were found.
     """
     # --- batch-level aggregate ---
     grid_sum = None
@@ -1315,6 +815,7 @@ def compute_and_save_aggregate_grid(analysis_folder):
         param_agg.to_parquet(os.path.join(param_folder, "aggregate_grid.parquet"), index=False)
         logger.info(f"Param-level aggregate grid saved to: {param_folder}")
 
+    return batch_agg, param_agg
 
 def load_all_aggregate_grids(filters):
     """
@@ -1343,18 +844,18 @@ def load_all_aggregate_grids(filters):
     ))
     base_folder = os.path.join(project_root, "analysis_data")
 
+    sp    = filters.get("starting_position", "centered")
+    efrac = float(filters.get("epr_fraction", 1.0))
+    cf_type = filters.get("cf_type", None)
+    cf_part = f"_cf_{cf_type}" if (efrac < 1.0 and cf_type is not None) else ""
+    _sp_abbr = {"centered": "c", "random": "r", "normal": "n"}.get(sp, "c")
     param_folder_name = (
-        f"ro_{filters['ro']}_gamma_{filters['gamma']}"
-        f"_a_{filters['a_param']}_b_{filters['b_param']}_time_{filters['time']}"
+        f"ro_{filters['ro']}_g_{filters['gamma']}"
+        f"_a_{filters['a_param']}_b_{filters['b_param']}_t_{filters['time']}"
     )
     if "cell_lenght" in filters and "cell_number" in filters:
-        param_folder_name += (
-            f"_clen_{filters['cell_lenght']}_cnum_{filters['cell_number']}"
-        )
-        if filters.get("random_start", False):
-            param_folder_name += "_rstart_yes"
-    if filters.get("epr_fraction", 1.0) < 1.0:
-        param_folder_name += f"_efrac_{filters['epr_fraction']}"
+        param_folder_name += f"_cl_{filters['cell_lenght']}_cn_{filters['cell_number']}"
+    param_folder_name += f"_sp_{_sp_abbr}_ef_{efrac}{cf_part}"
 
     param_folder = os.path.join(base_folder, param_folder_name)
     if not os.path.exists(param_folder):
@@ -1405,7 +906,7 @@ def load_all_batch_stats(filters):
         Simulation parameter filters to identify the param folder.
         Standard keys: "ro", "gamma", "a_param", "b_param", "time".
         Grid keys (when applicable): "cell_lenght", "cell_number".
-        Optional: "random_start" (bool), "epr_fraction" (float).
+        Optional: "starting_position" (str), "epr_fraction" (float).
 
     Returns
     -------
@@ -1419,22 +920,35 @@ def load_all_batch_stats(filters):
     ))
     base_folder = os.path.join(project_root, "analysis_data")
 
+    sp    = filters.get("starting_position", "centered")
+    efrac = float(filters.get("epr_fraction", 1.0))
+    cf_type = filters.get("cf_type", None)
+    cf_part = f"_cf_{cf_type}" if (efrac < 1.0 and cf_type is not None) else ""
+    _sp_abbr = {"centered": "c", "random": "r", "normal": "n"}.get(sp, "c")
     param_folder_name = (
-        f"ro_{filters['ro']}_gamma_{filters['gamma']}"
-        f"_a_{filters['a_param']}_b_{filters['b_param']}_time_{filters['time']}"
+        f"ro_{filters['ro']}_g_{filters['gamma']}"
+        f"_a_{filters['a_param']}_b_{filters['b_param']}_t_{filters['time']}"
     )
     if "cell_lenght" in filters and "cell_number" in filters:
-        param_folder_name += (
-            f"_clen_{filters['cell_lenght']}_cnum_{filters['cell_number']}"
-        )
-        if filters.get("random_start", False):
-            param_folder_name += "_rstart_yes"
-    if filters.get("epr_fraction", 1.0) < 1.0:
-        param_folder_name += f"_efrac_{filters['epr_fraction']}"
+        param_folder_name += f"_cl_{filters['cell_lenght']}_cn_{filters['cell_number']}"
+    param_folder_name += f"_sp_{_sp_abbr}_ef_{efrac}{cf_part}"
 
     param_folder = os.path.join(base_folder, param_folder_name)
+    logger.info(f"load_all_batch_stats looking for: {param_folder}")
     if not os.path.exists(param_folder):
-        logger.warning(f"Param folder not found for batch stats: {param_folder}")
+        # Log all available param folders to help diagnose mismatches
+        if os.path.exists(base_folder):
+            available = sorted(
+                d for d in os.listdir(base_folder)
+                if os.path.isdir(os.path.join(base_folder, d))
+            )
+            logger.warning(
+                f"Param folder not found for batch stats: {param_folder_name}\n"
+                f"  Available folders in analysis_data/:\n"
+                + "\n".join(f"    {d}" for d in available)
+            )
+        else:
+            logger.warning(f"analysis_data/ directory not found: {base_folder}")
         return []
 
     batch_stats_list = []
@@ -1446,162 +960,78 @@ def load_all_batch_stats(filters):
         if os.path.exists(stats_path):
             stats_df = pd.read_parquet(stats_path)
             batch_stats_list.append((entry, stats_df))
+            logger.info(f"  Found batch stats: {entry}")
+        else:
+            logger.debug(f"  Skipping (no batch_stats.parquet): {entry}")
 
-    logger.info(f"Loaded batch stats for {len(batch_stats_list)} batch(es)")
+    logger.info(f"Loaded batch stats for {len(batch_stats_list)} batch(es) from: {param_folder}")
     return batch_stats_list
 
-
-def print_batch_stats(batch_stats_list, filters=None, title=None):
+def compute_moran_i(batch_agg):
     """
-    Print a formatted summary table of batch-level statistics to stdout.
-
-    Fully generic: iterates over every metric/value row present in each
-    batch_stats.parquet without any hardcoded metric names.  This means
-    that any new metric added to batch_stats.parquet during analysis is
-    automatically displayed here without touching this function.
-
-    One section is printed per batch, mirroring the per-batch loop used
-    by the batch_grid plotter.  When more than one batch is available, a
-    recap table follows with mean and std for every numeric metric.
-
+    Compute Moran's I spatial autocorrelation statistic on a batch aggregate
+    grid, using esda (PySAL) with a rook-contiguity spatial weights matrix.
+ 
     Parameters
     ----------
-    batch_stats_list : list of (str, pd.DataFrame)
-        As returned by :func:`load_all_batch_stats`:
-        (batch_id, stats_df) pairs sorted by batch_id.
-        Each DataFrame must have columns 'metric' and 'value'.
-    filters : dict, optional
-        Simulation parameters — printed as a header line for context.
-    title : str, optional
-        Optional title printed above the output block.
+    batch_agg : pd.DataFrame
+        Batch-level aggregate grid as returned by compute_and_save_aggregate_grid().
+        Columns are expected to be strings (as saved to Parquet); they are
+        converted internally to a numeric numpy array before computation.
+        The grid must be square (n x n).
+ 
+    Returns
+    -------
+    dict with keys:
+        "I"       : float - Moran's I statistic.
+                            > E_I  → spatial clustering of similar visit counts.
+                            < E_I  → spatial dispersion (checkerboard pattern).
+                            ≈ E_I  → spatial randomness.
+        "E_I"     : float - Expected value under complete spatial randomness:
+                            -1 / (N - 1), where N is the number of cells.
+        "z_score" : float - Standardised z-score under normality assumption.
+        "p_value" : float - Two-tailed p-value for the null hypothesis of
+                            complete spatial randomness.
+ 
+    Raises
+    ------
+    ValueError
+        If the grid is not square, or if all cells share the same visit count
+        (variance zero, Moran's I undefined).
+ 
+    Notes
+    -----
+    Spatial weights: binary rook contiguity (4-neighbours: N, S, E, W),
+    row-standardised so each row sums to 1.  Built via libpysal.weights.lat2W.
+ 
+    The z-score and p-value are computed under the normality assumption
+    (esda.moran.Moran attributes z_norm / p_norm).
     """
-    if not batch_stats_list:
-        logger.warning("print_batch_stats: no batch stats to display.")
-        return
-
-    SEP_WIDE   = "=" * 72
-    SEP_NARROW = "-" * 72
-
-    # --- header ---
-    print(f"\n{SEP_WIDE}")
-    if title:
-        print(f"  {title}")
-    else:
-        print("  BATCH STATS SUMMARY")
-    if filters:
-        param_str = "  params: " + ", ".join(f"{k}={v}" for k, v in filters.items())
-        print(param_str)
-    print(f"  {len(batch_stats_list)} batch(es) found")
-    print(SEP_WIDE)
-
-    # recap_data[metric_name] = [value_batch_0, value_batch_1, ...]
-    recap_data = {}
-
-    for batch_id, stats_df in batch_stats_list:
-        print(f"\n  Batch : {batch_id}")
-        print(SEP_NARROW)
-
-        for _, row in stats_df.iterrows():
-            metric = str(row["metric"])
-            value  = row["value"]
-
-            # Format integers without decimal point when the value is whole
-            if isinstance(value, float) and value.is_integer():
-                val_str = f"{int(value):>10d}"
-            else:
-                val_str = f"{value:>10.4f}"
-
-            print(f"    {metric:<30s} {val_str}")
-            recap_data.setdefault(metric, []).append(value)
-
-        print(SEP_NARROW)
-
-    # --- recap table (only when > 1 batch) ---
-    if len(batch_stats_list) > 1:
-        print(f"\n  {'RECAP':^70s}")
-        print(SEP_WIDE)
-
-        # Header: Batch | metric_0 | metric_1 | ...
-        metric_names = list(recap_data.keys())
-        col_w = 12
-        hdr = f"  {'Batch':<26s}" + "".join(f"{m[:col_w]:>{col_w}s}" for m in metric_names)
-        print(hdr)
-        print(SEP_NARROW)
-
-        # One row per batch
-        for idx, (batch_id, stats_df) in enumerate(batch_stats_list):
-            metrics_dict = dict(zip(stats_df["metric"], stats_df["value"]))
-            row_str = f"  {batch_id:<26s}"
-            for m in metric_names:
-                v = metrics_dict.get(m, float("nan"))
-                if isinstance(v, float) and v.is_integer():
-                    row_str += f"{int(v):>{col_w}d}"
-                else:
-                    row_str += f"{v:>{col_w}.4f}"
-            print(row_str)
-
-        # Mean / std rows
-        print(SEP_NARROW)
-        for label, func in [("mean", np.mean), ("std", np.std)]:
-            row_str = f"  {label:<26s}"
-            for m in metric_names:
-                vals = [v for v in recap_data[m] if not np.isnan(v)]
-                row_str += f"{func(vals):>{col_w}.4f}" if vals else f"  {'n/a':>{col_w-2}s}"
-            print(row_str)
-
-        print(SEP_WIDE)
-
-    print()
-
-def plot_aggregate_grid(grid_matrix, filters=None, title=None, batch_id=None, mask_center=True, show=False):
-    """ Plot a heatmap of an aggregate grid matrix.
-
-        Parameters
-        ----------
-        grid_matrix : np.ndarray
-            2D integer array with cumulative visit counts per cell.
-        filters : dict, optional
-            Used for the saved plot file name.
-        title : str, optional
-            Plot title.
-        batch_id : str, optional
-            When provided, included in the saved file name to distinguish individual batch plots from the param-level plot.
-        mask_center : bool, optional
-            Whether to mask the center cell in the plot.
-            
-    """
-
-    logger.info(f"Plotting aggregate grid heatmap{' for batch ' + batch_id if batch_id else ''}")
-
-    # Copy
-    m = grid_matrix.copy()
-    cx = m.shape[0] // 2
-    cy = m.shape[1] // 2
-    m_safe = np.where(m == 0, 1, m)
-    if mask_center:
-        m_masked = np.ma.array(m_safe, mask=False)
-        m_masked.mask[cx, cy] = True
-    else:
-        m_masked = np.ma.array(m_safe, mask=False)
-    fig, ax = plt.subplots(figsize=(7, 6))
-    cmap = plt.cm.plasma.copy()
-    cmap.set_bad(color="white")
-
-    im = ax.imshow(
-        m_masked.T,
-        origin="lower",
-        aspect="equal",
-        cmap=cmap,
-        #norm=LogNorm()
+    grid_matrix = batch_agg.values.astype(float)
+ 
+    if grid_matrix.ndim != 2 or grid_matrix.shape[0] != grid_matrix.shape[1]:
+        raise ValueError(
+            f"batch_agg must be a square 2-D grid, got shape {grid_matrix.shape}"
+        )
+ 
+    if np.var(grid_matrix) == 0.0:
+        raise ValueError(
+            "All cells have the same visit count: Moran's I is undefined."
+        )
+ 
+    n = grid_matrix.shape[0]
+    W = lat2W(n, n, rook=True)
+    W.transform = "r"
+ 
+    mi = Moran(grid_matrix.flatten(), W)
+ 
+    logger.info(
+        f"Moran's I={mi.I:.4f}  E[I]={mi.EI:.4f}  "
+        f"z={mi.z_norm:.3f}  p={mi.p_norm:.4f}"
     )
-
-    plt.colorbar(im, ax=ax, label="Total visits")
-    ax.set_xlabel("Cell X")
-    ax.set_ylabel("Cell Y")
-
-    if title:
-        ax.set_title(title, fontsize=6)
-
-    name = f"plot_aggregate_grid{'_' + batch_id if batch_id else ''}"
-
-    filepath_save_plot_or_show("plots", name=name, filters=filters, show=show)
+    return {
+        "I":       mi.I,
+        "E_I":     mi.EI,
+        "z_score": mi.z_norm,
+        "p_value": mi.p_norm,
+    }

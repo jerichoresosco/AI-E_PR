@@ -1,6 +1,9 @@
 import numpy as np
 import model.user
 import model.utils
+import model.utils_plot
+import model.utils_cf
+import model.grid
 import pandas as pd
 import os
 from datetime import datetime
@@ -27,6 +30,20 @@ class Simulation:
                                             grid_params optional: cell_lenght, cell_number
         load_analysis_data(plot_params)     requires ro, gamma, a_param, b_param, time, [user_number]
         plot(plot_list)
+
+    Additional entry points for chained simulations:
+        resume(simulate_params, grid_params)
+            Continue a simulation on users already loaded in memory (self.users_list must be
+            populated either by run() or by _reconstruct_users_from_raw()).
+            resume_params["time"] is interpreted as the *new* absolute clock target: users
+            will run until their clock reaches this value.
+
+        _reconstruct_users_from_raw(load_params, grid_params)
+            Load a specific raw_data batch from disk and rebuild live User objects from
+            the saved Parquet files, so that resume() can continue the simulation.
+            load_params extends the standard parameter dict with:
+                "batch_id" (str, optional) : timestamp folder name to load.
+                    When absent, the most-recent batch is used automatically.
     """
 
     def __init__(self):
@@ -65,6 +82,7 @@ class Simulation:
 
         #Selecting saveplot or showplot
         self._show = None
+
     # ==========================================================================
     # PHASE 1: SIMULATE
     # ==========================================================================
@@ -90,10 +108,11 @@ class Simulation:
         b_param      = simulate_params["b_param"]
         user_number  = simulate_params["user_number"]
         time         = simulate_params["time"]
-        grid_exists  = simulate_params["grid"]
-        random_start = simulate_params.get("random_start", False)
-        epr_fraction = simulate_params.get("epr_fraction", 1.0)
-        top_k        = simulate_params.get("top_k", 10)
+        grid_exists       = simulate_params["grid"]
+        starting_position = simulate_params["starting_position"]
+        epr_fraction      = simulate_params["epr_fraction"]
+        top_k        = simulate_params["top_k"]
+        cf_type      = simulate_params["cf_type"]
 
         if epr_fraction <= 0:
             raise ValueError(
@@ -109,33 +128,43 @@ class Simulation:
         self.b_param          = b_param
         self._simulate_params = simulate_params
         self.grid_exists      = grid_exists
-        self._random_start    = random_start
+        self._starting_position = starting_position
 
         if grid_exists == True:
             self._grid_params = grid_params
             self.grid_cell_lenght = grid_params["cell_lenght"]
             self.grid_cell_number = grid_params["cell_number"]
-            if random_start:
+            if starting_position in ("random", "normal"):
                 self._spatial_center = (self.grid_cell_lenght * self.grid_cell_number) / 2
+                #This definition is done following the grid logic, where the grid is defined from (0,0) to
+                #(cell_lenght*cell_number, cell_lenght*cell_number), so the center is in the middle of the grid, not at (0,0)
 
         epr_time  = epr_fraction * time
-        milestone = max(1, user_number // 10)
+        milestone = max(1, user_number // 10) #10% progress milestones for logging
         logger.info(
             f"Starting EPR phase for {user_number} users "
             f"(epr_fraction={epr_fraction}, epr_time={epr_time})..."
         )
 
         # ---------------------------------------------------------------
-        # Phase 1: EPR 
+        # Phase 1: EPR
         # ---------------------------------------------------------------
         for i in range(user_number):
-            # Determine starting position
-            if grid_exists and random_start:
+            if grid_exists and starting_position == "random":
                 sc = self._spatial_center
                 init_pos = (
                     np.random.uniform(-sc, sc),
                     np.random.uniform(-sc, sc),
                 )
+            elif grid_exists and starting_position == "normal":
+                sc = self._spatial_center
+                sigma = sc / 3
+                def _sample(sc=sc, sigma=sigma):
+                    while True:
+                        v = np.random.normal(0, sigma)
+                        if -sc <= v <= sc:
+                            return float(v)
+                init_pos = (_sample(), _sample())
             else:
                 init_pos = None
 
@@ -160,10 +189,12 @@ class Simulation:
         # Phase 2: CF -- build neighbor data, then run CF for remaining time
         # ------------------------------------------------------------------
         if epr_fraction < 1.0:
-            cf_updates   = 4 ##NEED MAIN IMPLEMENTATION!!!!
+            cf_updates   = 4  ##NEED MAIN IMPLEMENTATION!!!!
             n_intervals  = cf_updates + 1
             cf_duration  = time - epr_time
             interval_len = cf_duration / n_intervals
+
+            check_run_dir = None  # created on first interval, reused afterwards
 
             for interval in range(n_intervals):
                 t_start = epr_time + interval * interval_len
@@ -173,16 +204,26 @@ class Simulation:
                     f"CF interval {interval + 1}/{n_intervals}: "
                     f"rebuilding similarities, running [{t_start:.1f}, {t_end:.1f}]..."
                 )
-                cf_neighbors_list = self._build_cf_data(top_k)
+                cf_neighbors, check_run_dir = model.utils_cf.build_cf_data(
+                    users_list     = self.users_list,
+                    top_k          = top_k,
+                    cf_type        = cf_type,
+                    simulate_params= self._simulate_params,
+                    grid_exists    = self.grid_exists,
+                    grid_params    = getattr(self, "_grid_params", None),
+                    check_run_dir  = check_run_dir,
+                    interval_idx   = interval,
+                )
 
                 for i, user in enumerate(self.users_list):
-                    neighbors = cf_neighbors_list[i]
+                    neighbors = cf_neighbors[i]
                     while user.clock < t_end:
-                        user.make_decision_cf(neighbors)
+                        user.make_decision_cf(neighbors, cf_type)
 
-        # -----------------------------------------------------------------------
-        # Trim: remove the last record if it pushed the clock past the time limit
-        # -----------------------------------------------------------------------
+        #TO BE SOLVED!!! Here we are trying to remove what is generated past the limit time, that is the last step for each user,
+        #but this solution is not working properly, because what is updated in make_decision and make_decision_cf are user_history,
+        #venue_history and grid.matrix, so we need to find a way to remove the last step from all of them. We are correctly removing user_history,
+        #partially venue history and the grid is not changed at all.
         for user in self.users_list:
             header    = user.user_history[0]
             clock_idx = header.index("Clock")
@@ -192,95 +233,409 @@ class Simulation:
                 if last_row[state_idx] == "E":
                     user.venue_history.pop()
 
-    def _build_cf_data(self, top_k):
+    def resume(self, simulate_params, grid_params=None):
         """
-        Build cosine-similarity-based top-k neighbor lists for every user.
+        Continue the simulation on users already in self.users_list.
 
-        Constructs a user-venue visit-count matrix from the current state of
-        self.users_list, computes pairwise cosine similarities, and returns for
-        each user a ranked list of the most similar neighbors.
+        Users are advanced until their clock reaches simulate_params["time"],
+        which is interpreted as an *absolute* target clock, not an additional
+        duration.  This means the value should be larger than the clock values
+        the users already carry (i.e. the end-time of the previous run phase).
+
+        Supports the same EPR / EPR+CF logic as run():
+          - epr_fraction == 1.0  →  pure EPR for the whole resume window
+          - epr_fraction <  1.0  →  EPR up to (epr_fraction * extra_time), then CF
+
+        where extra_time = simulate_params["time"] - mean clock of users at entry.
+
+        This method updates self._simulate_params so that save_raw_data() and
+        run_analysis() will use the new parameters (including the new "time")
+        for folder naming.
 
         Parameters
         ----------
-        top_k : int
-            Maximum number of neighbors to retain per user.
-            If fewer users have positive similarity, all of them are kept.
+        simulate_params : dict
+            Must contain: "ro", "gamma", "a_param", "b_param", "time".
+            Optional: "epr_fraction" (float, default 1.0), "top_k" (int, default 10).
+            "user_number" is ignored: all users already in memory are continued.
+        grid_params : dict, optional
+            When the simulation uses a grid, must contain "cell_lenght" and
+            "cell_number".  When None (default) self._grid_params is reused
+            if it exists.
+        """
+        if not self.users_list:
+            raise RuntimeError(
+                "resume() called but self.users_list is empty. "
+                "Call run() or _reconstruct_users_from_raw() first."
+            )
+
+        ro           = simulate_params["ro"]
+        gamma        = simulate_params["gamma"]
+        a_param      = simulate_params["a_param"]   # kept for symmetry; not used in loop
+        b_param      = simulate_params["b_param"]
+        time_target  = simulate_params["time"]
+        epr_fraction = simulate_params["epr_fraction"]
+        top_k        = simulate_params["top_k"]
+        cf_type      = simulate_params["cf_type"]
+
+        self.ro               = ro
+        self.gamma            = gamma
+        self._simulate_params = simulate_params
+
+        # Resolve grid_params
+        if grid_params is not None:
+            self._grid_params     = grid_params
+            self.grid_cell_lenght = grid_params["cell_lenght"]
+            self.grid_cell_number = grid_params["cell_number"]
+        elif getattr(self, "_grid_params", None) is not None:
+            grid_params = self._grid_params  # reuse from previous run cause it must match the loaded state
+
+        n_users   = len(self.users_list)
+        milestone = max(1, n_users // 10)
+
+        # Compute the effective start of this resume window from the users' clocks
+        current_clocks = [u.clock for u in self.users_list]
+        resume_start   = sum(current_clocks) / n_users   # approximate; each user may differ
+        extra_time     = time_target - resume_start
+
+        if extra_time <= 0:
+            logger.warning(
+                f"resume() called but time_target={time_target} is not larger than "
+                f"the current mean user clock ({resume_start:.1f}). Nothing to do."
+            )
+            return
+
+        logger.info(
+            f"Resuming simulation: {n_users} users, "
+            f"clock range [{min(current_clocks):.1f}, {max(current_clocks):.1f}] "
+            f"→ target={time_target}, epr_fraction={epr_fraction}"
+        )
+
+        if epr_fraction == 1.0:
+            # ---------------------------------------------------------------
+            # Pure EPR resume
+            # ---------------------------------------------------------------
+            for i, user in enumerate(self.users_list):
+                while user.clock < time_target: #for each user the clock is different and is the same as the last one in user_history.
+                    user.make_decision()
+                if (i + 1) % milestone == 0 or (i + 1) == n_users:
+                    pct = ((i + 1) / n_users) * 100
+                    logger.info(f"Resume EPR progress: {pct:.0f}% ({i+1}/{n_users} users)")
+
+        else:
+            # ---------------------------------------------------------------
+            # EPR phase up to epr_fraction * extra_time, then CF
+            # ---------------------------------------------------------------
+            epr_end = resume_start + epr_fraction * extra_time
+
+            logger.info(f"Resume EPR phase: running to clock={epr_end:.1f}...")
+            for i, user in enumerate(self.users_list):
+                while user.clock < epr_end:
+                    user.make_decision()
+                if (i + 1) % milestone == 0 or (i + 1) == n_users:
+                    pct = ((i + 1) / n_users) * 100
+                    logger.info(f"Resume EPR progress: {pct:.0f}% ({i+1}/{n_users} users)")
+
+            # CF intervals
+            ##NEED MAIN IMPLEMENTATION!!!!
+            cf_updates   = 4
+            n_intervals  = cf_updates + 1
+            cf_duration  = time_target - epr_end
+            interval_len = cf_duration / n_intervals
+
+            check_run_dir = None  # created on first interval, reused afterwards
+
+            for interval in range(n_intervals):
+                t_end = epr_end + (interval + 1) * interval_len
+                logger.info(
+                    f"Resume CF interval {interval + 1}/{n_intervals}: "
+                    f"rebuilding similarities, running to {t_end:.1f}..."
+                )
+                cf_neighbors, check_run_dir = model.utils_cf.build_cf_data(
+                    users_list     = self.users_list,
+                    top_k          = top_k,
+                    cf_type        = cf_type,
+                    simulate_params= self._simulate_params,
+                    grid_exists    = self.grid_exists,
+                    grid_params    = getattr(self, "_grid_params", None),
+                    check_run_dir  = check_run_dir,
+                    interval_idx   = interval,
+                )
+                for i, user in enumerate(self.users_list):
+                    neighbors = cf_neighbors[i]
+                    while user.clock < t_end:
+                        user.make_decision_cf(neighbors, cf_type)
+
+        for user in self.users_list:
+            header    = user.user_history[0]
+            clock_idx = header.index("Clock")
+            state_idx = header.index("State(E/R)")
+            if len(user.user_history) > 1 and user.user_history[-1][clock_idx] > time_target:
+                last_row = user.user_history.pop()
+                if last_row[state_idx] == "E":
+                    user.venue_history.pop()
+
+        logger.info("Resume complete.")
+
+
+    def _reconstruct_users_from_raw(self, load_params, grid_params=None):
+        """
+        Load a raw_data batch from disk and reconstruct live User objects so that
+        resume() can continue the simulation from the saved state.
+
+        The method locates the correct parameter folder in raw_data/ using
+        load_params, then selects a specific batch sub-folder (by batch_id or
+        automatically the most recent one), reads the Parquet files for every
+        user, and rebuilds each User object in memory.
+
+        Reconstructed state per user
+        ----------------------------
+        - user_history     : full list-of-lists, header row prepended
+        - venue_history    : full list-of-lists, header row prepended
+        - _venue_index     : rebuilt from venue_history
+        - num_distinct_venues : len(venue_history) - 1
+        - clock            : last Clock value in user_history
+        - position         : (Destination_x_coord, Destination_y_coord) of last row
+        - previous_position: (Departure_x_coord, Departure_y_coord) of last row
+        - departure        : Departure field of last row
+        - state            : State(E/R) field of last row
+        - grid.matrix      : loaded from user_{i}_grid.parquet when grid is active
+        - simulation       : reference to self (re-attached here)
+
+        Parameters
+        ----------
+        load_params : dict
+            Standard simulation parameter keys: "ro", "gamma", "a_param",
+            "b_param", "time", "grid", "starting_position" (optional).
+            Additional key:
+                "batch_id" (str, optional)
+                    Exact timestamp folder name to load (e.g. "20240601_120000_123456").
+                    When absent, the most-recent batch folder is selected automatically.
+        grid_params : dict, optional
+            Required when load_params["grid"] is True.
+            Must contain "cell_lenght" and "cell_number".
+            When None, self._grid_params is used if available.
 
         Returns
         -------
-        list of list of (User, float)
-            cf_neighbors[i] = [(neighbor_User, similarity_weight), ...]
-            sorted by descending similarity for user i.
-            An empty list is returned for users with no positively similar neighbor.
+        str
+            Path to the raw_data batch folder that was loaded, so it can be
+            passed to run_analysis() or save_raw_data() if needed.
 
-        Notes
-        -----
-        - Similarity is cosine similarity on raw visit counts.
-        - Self-similarity is zeroed out (a user is never its own neighbor).
-        - Only neighbors with strictly positive similarity are included.
+        Raises
+        ------
+        FileNotFoundError
+            When the parameter folder or the requested batch folder does not exist.
+        RuntimeError
+            When no batch folders are found inside the parameter folder.
         """
-        n_users = len(self.users_list)
 
-        # Collect all unique venue names in insertion order
-        all_venues = []
-        venue_set  = set()
-        for user in self.users_list:
-            for row in user.venue_history[1:]:
-                if row[0] not in venue_set:
-                    venue_set.add(row[0])
-                    all_venues.append(row[0])
-        venue_to_idx = {v: i for i, v in enumerate(all_venues)}
-        n_venues = len(all_venues)
+        # Resolve grid_params
+        if grid_params is not None:
+            self._grid_params     = grid_params
+            self.grid_cell_lenght = grid_params["cell_lenght"]
+            self.grid_cell_number = grid_params["cell_number"]
 
-        # Build user-venue visit count matrix
-        uv_matrix = np.zeros((n_users, n_venues), dtype=float)
-        for ui, user in enumerate(self.users_list):
-            for row in user.venue_history[1:]:
-                uv_matrix[ui, venue_to_idx[row[0]]] = row[1]
+        grid_exists       = load_params.get("grid", False)
+        starting_position = load_params.get("starting_position", "centered")
+        batch_id          = load_params.get("batch_id", None)
 
-        # Cosine similarity matrix
-        norms = np.linalg.norm(uv_matrix, axis=1, keepdims=True)
-        norms[norms == 0] = 1.0
-        uv_norm    = uv_matrix / norms
-        sim_matrix = uv_norm @ uv_norm.T
-        np.fill_diagonal(sim_matrix, 0.0)
+        # ------------------------------------------------------------------
+        # Locate the parameter folder in raw_data/
+        # ------------------------------------------------------------------
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        base_folder  = os.path.join(project_root, "raw_data")
 
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        root_dir = os.path.dirname(current_dir)
-        check_dir = os.path.join(root_dir, "check")
-        os.makedirs(check_dir, exist_ok=True)
+        efrac   = float(load_params.get("epr_fraction", 1.0))
+        sp      = load_params.get("starting_position", "centered")
+        cf_type = load_params.get("cf_type", None)
+        cf_part = f"_cf_{cf_type}" if (efrac < 1.0 and cf_type is not None) else ""
+        _sp_abbr = {"centered": "c", "random": "r", "normal": "n"}.get(sp, "c")
 
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-
-        np.savetxt(os.path.join(check_dir, f"sim_matrix_{ts}.txt"), sim_matrix, fmt='%.6f')
-
-        top_k_actual = min(top_k, n_users - 1)
-        cf_neighbors = []
-        for ui in range(n_users):
-            sims     = sim_matrix[ui]
-            pos_mask = sims > 0
-            if not pos_mask.any():
-                cf_neighbors.append([])
-                continue
-            pos_indices = np.where(pos_mask)[0]
-            if len(pos_indices) > top_k_actual:
-                # Keep the top_k_actual most similar
-                pos_indices = pos_indices[np.argsort(sims[pos_indices])[::-1]][:top_k_actual]
-            else:
-                pos_indices = pos_indices[np.argsort(sims[pos_indices])[::-1]]
-            cf_neighbors.append(
-                [(self.users_list[j], float(sims[j])) for j in pos_indices]
+        if grid_exists and grid_params is not None:
+            param_folder_name = (
+                f"ro_{load_params['ro']}_g_{load_params['gamma']}"
+                f"_a_{load_params['a_param']}_b_{load_params['b_param']}"
+                f"_t_{load_params['time']}"
+                f"_cl_{grid_params['cell_lenght']}_cn_{grid_params['cell_number']}"
+                f"_sp_{_sp_abbr}"
+                f"_ef_{efrac}"
+                f"{cf_part}"
+            )
+        else:
+            param_folder_name = (
+                f"ro_{load_params['ro']}_g_{load_params['gamma']}"
+                f"_a_{load_params['a_param']}_b_{load_params['b_param']}"
+                f"_t_{load_params['time']}"
+                f"_sp_{_sp_abbr}"
+                f"_ef_{efrac}"
+                f"{cf_part}"
             )
 
-        with open(os.path.join(check_dir, f"neighbors_{ts}.txt"), "w") as f:
-            for row in cf_neighbors:
-                f.write(",".join(map(str, row)) + "\n")
+        param_folder = os.path.join(base_folder, param_folder_name)
+        if not os.path.exists(param_folder):
+            raise FileNotFoundError(
+                f"_reconstruct_users_from_raw: parameter folder not found:\n  {param_folder}"
+            )
+
+        # ------------------------------------------------------------------
+        # Select the batch sub-folder
+        # ------------------------------------------------------------------
+        if batch_id is not None:
+            run_folder = os.path.join(param_folder, batch_id)
+            if not os.path.exists(run_folder):
+                raise FileNotFoundError(
+                    f"_reconstruct_users_from_raw: requested batch_id not found:\n  {run_folder}"
+                )
+        else:
+            # Pick the most-recent batch
+            candidates = sorted(
+                d for d in os.listdir(param_folder)
+                if os.path.isdir(os.path.join(param_folder, d))
+            )
+            if not candidates:
+                raise RuntimeError(
+                    f"_reconstruct_users_from_raw: no batch folders found in:\n  {param_folder}"
+                )
+            run_folder = os.path.join(param_folder, candidates[-1])
+            logger.info(
+                f"batch_id not specified — using most recent batch: {candidates[-1]}"
+            )
+
+        logger.info(f"Reconstructing users from: {run_folder}")
+
+        # ------------------------------------------------------------------
+        # Discover how many users are in this batch
+        # ------------------------------------------------------------------
+        user_indices = sorted(
+            int(fname[len("user_"):-len("_history.parquet")])
+            for fname in os.listdir(run_folder)
+            if fname.startswith("user_") and fname.endswith("_history.parquet")
+        )
+        if not user_indices:
+            raise RuntimeError(
+                f"_reconstruct_users_from_raw: no user_*_history.parquet files in:\n  {run_folder}"
+            )
+
+        # ------------------------------------------------------------------
+        # Restore simulation-level attributes needed by User objects
+        # ------------------------------------------------------------------
+        self.ro               = load_params["ro"]
+        self.gamma            = load_params["gamma"]
+        self.a_param          = load_params["a_param"]
+        self.grid_exists      = grid_exists
+        self._starting_position = starting_position
+
+        if grid_exists and grid_params is not None:
+            self.grid_cell_lenght = grid_params["cell_lenght"]
+            self.grid_cell_number = grid_params["cell_number"]
+
+        self.users_list = []
+        n_users   = len(user_indices)
+        milestone = max(1, n_users // 10)
+
+        history_header = [
+            "State(E/R)", "Departure",
+            "Departure_x_coord", "Departure_y_coord",
+            "Destination", "Destination_x_coord", "Destination_y_coord",
+            "Distance", "Angle", "Delta_t", "Clock",
+        ]
+        venue_header = ["Venue_name", "Number of visits", "Venue_x_coord", "Venue_y_coord"]
+
+        for pos, i in enumerate(user_indices):
+            h_path = os.path.join(run_folder, f"user_{i}_history.parquet")
+            v_path = os.path.join(run_folder, f"user_{i}_venue.parquet")
+            g_path = os.path.join(run_folder, f"user_{i}_grid.parquet")
+
+            history_df = pd.read_parquet(h_path)
+            venue_df   = pd.read_parquet(v_path) if os.path.exists(v_path) else None
+
+            # Rebuild history as list-of-lists (matching the live format)
+            user_history  = [history_header] + history_df.values.tolist()
+            venue_history = [venue_header]
+            if venue_df is not None:
+                venue_history += venue_df.values.tolist()
+
+            # Last row of history -> current state
+            last = user_history[-1]
+            col  = {name: idx for idx, name in enumerate(history_header)}
+
+            last_clock    = last[col["Clock"]]
+            last_position = (last[col["Destination_x_coord"]], last[col["Destination_y_coord"]])
+            last_prev_pos = (last[col["Departure_x_coord"]],   last[col["Departure_y_coord"]])
+            last_departure= last[col["Departure"]]
+            last_state    = last[col["State(E/R)"]]
+
+            # Rebuild _venue_index: venue_name -> row index in venue_history
+            venue_index = {}
+            for row_idx, row in enumerate(venue_history[1:], start=1):
+                venue_index[row[0]] = row_idx
+
+            # ------------------------------------------------------------------
+            # Build a minimal User object without calling first_exploration()
+            # We achieve this by calling __new__ and populating attributes manually
+            # ------------------------------------------------------------------
+            user = model.user.User.__new__(model.user.User)
+            user.uid          = f"User_{i}"
+            user.a_param      = load_params["a_param"]
+            user.b_param      = load_params["b_param"]
+            user.simulation   = self
+
+            user.has_grid = grid_exists
+            if grid_exists and os.path.exists(g_path):
+                grid_df = pd.read_parquet(g_path)
+                g = model.grid.Grid.__new__(model.grid.Grid)
+                g.cell_lenght    = grid_params["cell_lenght"]
+                g.cell_number    = grid_params["cell_number"]
+                g.spatial_center = (g.cell_lenght * g.cell_number) / 2
+                g.matrix         = grid_df.values.astype(int)
+                user.grid = g
+            elif grid_exists:
+                logger.warning(f"User_{i}: grid.parquet not found, creating fresh grid.")
+                user.grid = model.grid.Grid(
+                    cell_lenght=grid_params["cell_lenght"],
+                    cell_number=grid_params["cell_number"],
+                )
+
+            user.user_history       = user_history
+            user.venue_history      = venue_history
+            user._venue_index       = venue_index
+            user.num_distinct_venues= len(venue_history) - 1
+
+            user.clock              = last_clock
+            user.position           = last_position
+            user.previous_position  = last_prev_pos
+            user.departure          = last_departure
+            user.state              = last_state
+
+            # Transient movement attributes (not needed to resume, but must exist)
+            user.next_position      = None
+            user.destination        = None
+            user.previous_destination = None
+            user.next_venue_return  = None
+            user.delta_r            = None
+            user.angle              = None
+            user.delta_t            = None
+            user.r_cm               = None
+            user.r_gyr              = None
+            user.stats              = [["metric", "value"]]
+            user._row_index         = None
+
+            self.users_list.append(user)
+
+            if (pos + 1) % milestone == 0 or (pos + 1) == n_users:
+                pct = ((pos + 1) / n_users) * 100
+                logger.info(f"Reconstruction progress: {pct:.0f}% ({pos+1}/{n_users} users)")
 
         logger.info(
-            f"CF neighbor data built: {n_users} users, {n_venues} unique venues, "
-            f"top_k={top_k_actual}"
+            f"Reconstructed {n_users} users from batch: {os.path.basename(run_folder)}"
         )
-        return cf_neighbors
+
+        # Store so that save_combined_raw_data() and run_analysis() can build
+        # the two-level folder structure without the caller having to pass it again.
+        self._load_params = load_params
+
+        return run_folder
 
     def save_raw_data(self):
         """
@@ -317,7 +672,6 @@ class Simulation:
         for i, user in enumerate(self.users_list):
             user_df  = pd.DataFrame(user.user_history[1:],  columns=user.user_history[0])
             venue_df = pd.DataFrame(user.venue_history[1:], columns=user.venue_history[0])
-            #print(venue_df)
 
             user_df.to_parquet( os.path.join(run_folder, f"user_{i}_history.parquet"), index=False)
             venue_df.to_parquet(os.path.join(run_folder, f"user_{i}_venue.parquet"),   index=False)
@@ -334,11 +688,72 @@ class Simulation:
         logger.info(f"Raw data saved to: {run_folder}")
         return run_folder
 
+    def save_combined_raw_data(self):
+        """
+        Save raw trajectories for a chained simulation (load → resume) under
+        combined_raw_data/ using a two-level parameter folder structure that
+        makes the provenance explicit.
+
+        Folder layout
+        -------------
+        combined_raw_data/
+            <base_params>/          ← parameters of the loaded batch (load_params)
+                <resume_params>/    ← parameters of the resumed simulation (_simulate_params)
+                    {YYYYMMDD_HHMMSS_ffffff}/
+                        user_0_history.parquet
+                        user_0_venue.parquet
+                        [user_0_grid.parquet]
+
+        Must be called after _reconstruct_users_from_raw() and resume().
+
+        Returns
+        -------
+        str
+            Path to the timestamped run folder that was just created.
+        """
+        logger.info("Saving combined raw simulation data...")
+
+        if not hasattr(self, "_load_params") or self._load_params is None:
+            raise RuntimeError(
+                "save_combined_raw_data() requires _load_params to be set. "
+                "Call _reconstruct_users_from_raw() before this method."
+            )
+
+        gp = getattr(self, "_grid_params", None)
+        run_folder = self._make_combined_run_folder(
+            "combined_raw_data",
+            base_params   = self._load_params,
+            resume_params = self._simulate_params,
+            grid_params   = gp,
+        )
+
+        total     = len(self.users_list)
+        milestone = max(1, total // 10)
+
+        for i, user in enumerate(self.users_list):
+            user_df  = pd.DataFrame(user.user_history[1:],  columns=user.user_history[0])
+            venue_df = pd.DataFrame(user.venue_history[1:], columns=user.venue_history[0])
+
+            user_df.to_parquet( os.path.join(run_folder, f"user_{i}_history.parquet"), index=False)
+            venue_df.to_parquet(os.path.join(run_folder, f"user_{i}_venue.parquet"),   index=False)
+
+            if self.grid_exists:
+                grid_df = pd.DataFrame(user.grid.matrix)
+                grid_df.columns = grid_df.columns.astype(str)
+                grid_df.to_parquet(os.path.join(run_folder, f"user_{i}_grid.parquet"), index=False)
+
+            if (i + 1) % milestone == 0 or (i + 1) == total:
+                pct = ((i + 1) / total) * 100
+                logger.info(f"Save progress: {pct:.0f}% ({i+1}/{total} users saved)")
+
+        logger.info(f"Combined raw data saved to: {run_folder}")
+        return run_folder
+
     # ==========================================================================
     # PHASE 2: ANALYSIS
     # ==========================================================================
 
-    def run_analysis(self, analyse_params, raw_run_folder=None, grid_params=None):
+    def run_analysis(self, analyse_params, raw_run_folder=None, grid_params=None, combined=False):
         """
         Compute all analysis quantities from raw trajectory data and save them
         to analysis_data/.
@@ -427,17 +842,28 @@ class Simulation:
             # simulate_and_analyse: users in memory, raw folder still known
             raw_folders_to_lock.add(raw_run_folder)
 
-        if analyse_params["grid"] == True:
+        if combined:
+            if not hasattr(self, "_load_params") or self._load_params is None:
+                raise RuntimeError(
+                    "run_analysis(combined=True) requires _load_params to be set. "
+                    "Call _reconstruct_users_from_raw() before this method."
+                )
+            analysis_folder = self._make_combined_run_folder(
+                "combined_analysis_data",
+                base_params   = self._load_params,
+                resume_params = analyse_params,
+                grid_params   = grid_params,
+            )
+        elif analyse_params["grid"] == True:
             analysis_folder = self._make_run_folder("analysis_data", analyse_params, grid_params)
         else:
             analysis_folder = self._make_run_folder("analysis_data", analyse_params)
         total     = len(self.users_list)
         milestone = max(1, total // 10)
 
-        # Accumulator for collective Gini: {venue_name: total_visits_across_all_users}
-        collective_venue_counts = {}
-        #Accumulator for individual Gini coefficients to compute batch-level average
-        gini_ind_arr = np.array([])
+        #List of raw data
+        user_history_df_list = []
+        venue_history_df_list = []
 
         for i, user_entry in enumerate(self.users_list):
             if isinstance(user_entry, model.user.User):
@@ -451,23 +877,12 @@ class Simulation:
             else:
                 user_history_df, venue_history_df = user_entry
 
+            user_history_df_list.append(user_history_df)
+            venue_history_df_list.append(venue_history_df)
+
             stats_df        = model.utils.compute_stats(user_history_df)
             rg_over_time_df = model.utils.compute_rg_over_time(user_history_df)
             s_over_time_df  = model.utils.compute_s_over_time(user_history_df)
-
-            # --- Individual Gini coefficient ---
-            gini_ind = model.utils.compute_individual_gini(venue_history_df)
-            gini_row = pd.DataFrame([{"metric": "gini_individual", "value": gini_ind}])
-            stats_df = pd.concat([stats_df, gini_row], ignore_index=True)
-            gini_ind_arr = np.append(gini_ind_arr, gini_ind)
-
-            # --- Accumulate venue counts for collective Gini ---
-            for _, row in venue_history_df.iterrows():
-                venue  = row["Venue_name"]
-                visits = row["Number of visits"]
-                collective_venue_counts[venue] = (
-                    collective_venue_counts.get(venue, 0) + visits
-                )
 
             user_history_df.to_parquet(
                 os.path.join(analysis_folder, f"user_{i}_history.parquet"),      index=False)
@@ -496,22 +911,26 @@ class Simulation:
                 pct = ((i + 1) / total) * 100
                 logger.info(f"Analysis progress: {pct:.0f}% ({i+1}/{total} users)")
 
-        # Individual Gini Batch
-        gini_ind_batch = np.mean(gini_ind_arr)
-        # Collective Gini coefficient (batch level)
-        gini_coll = model.utils.compute_collective_gini(collective_venue_counts)
+        gini_ind  = model.utils.compute_individual_gini(venue_history_df_list)
+        gini_coll = model.utils.compute_collective_gini(venue_history_df_list)
+
         batch_stats_df = pd.DataFrame([
             {"metric": "gini_collective",     "value": gini_coll},
-            {"metric": "gini_individual",     "value": gini_ind_batch},
+            {"metric": "gini_individual",     "value": gini_ind},
             {"metric": "n_users",             "value": float(total)},
-            {"metric": "n_venues_collective", "value": float(len(collective_venue_counts))},
+            #{"metric": "n_venues_collective", "value": float(len(collective_venue_counts))},
+            #collective_venue_counts is now inside the compute_collective_gini function, and its length is not returned.
         ])
+
+        if analyse_params.get("grid", False):
+            batch_grid, _ = model.utils.compute_and_save_aggregate_grid(analysis_folder)
+            moran_i_dict  = model.utils.compute_moran_i(batch_grid)
+            moran_df      = pd.DataFrame([{"metric": k, "value": v} for k, v in moran_i_dict.items()])
+            batch_stats_df = pd.concat([batch_stats_df, moran_df], ignore_index=True)
+
         batch_stats_df.to_parquet(
             os.path.join(analysis_folder, "batch_stats.parquet"), index=False
         )
-
-        if analyse_params.get("grid", False):
-            model.utils.compute_and_save_aggregate_grid(analysis_folder)
 
         logger.info(f"Analysis data saved to: {analysis_folder}")
 
@@ -536,7 +955,7 @@ class Simulation:
         plot_params : dict
             Must contain: "ro", "gamma", "a_param", "b_param", "time".
             Optional: "user_number" (positive = first N, negative = last N, absent = all),
-            "grid" (bool), "random_start" (bool), "epr_fraction" (float).
+            "grid" (bool), "starting_position" (str), "epr_fraction" (float).
         grid_params : dict, optional
             When provided (and plot_params["grid"] is True), must contain
             "cell_lenght" and "cell_number". Merged into the filter dict passed
@@ -671,53 +1090,53 @@ class Simulation:
             "two_radius", "s_over_time", "rg_over_time".
         """
         self._show = show
-        p = self._plot_params
+        p  = self._plot_params
         pg = self._plot_grid_params
 
         if "mobility" in plot_list:
-            model.utils.plot_mobility_visualization(
+            model.utils_plot.plot_mobility_visualization(
                 self.last_user_history, self.last_venue_history,
                 stats=self.last_stats,
-                filters=p, title=model.utils.build_plot_title("User Mobility", p),
+                filters=p, title=model.utils_plot.build_plot_title("User Mobility", p),
                 show=self._show
             )
         if "rg_distribution" in plot_list:
-            model.utils.plot_rg_distribution(
+            model.utils_plot.plot_rg_distribution(
                 self.rg_list,
-                filters=p, title=model.utils.build_plot_title("RG Distribution", p),
+                filters=p, title=model.utils_plot.build_plot_title("RG Distribution", p),
                 show=self._show
             )
         if "freq_distribution" in plot_list:
-            model.utils.plot_frequency_distribution(
+            model.utils_plot.plot_frequency_distribution(
                 self.venue_history_list, self.gamma,
-                filters=p, title=model.utils.build_plot_title("Frequency Distribution", p),
+                filters=p, title=model.utils_plot.build_plot_title("Frequency Distribution", p),
                 show=self._show
             )
         if "two_radius" in plot_list:
-            model.utils.plot_two_radius_vs_radius(
+            model.utils_plot.plot_two_radius_vs_radius(
                 self.rg_list, self.two_rg_list,
-                filters=p, title=model.utils.build_plot_title("Two-RG vs RG", p),
+                filters=p, title=model.utils_plot.build_plot_title("Two-RG vs RG", p),
                 show=self._show
             )
         if "s_over_time" in plot_list:
-            model.utils.plot_S_over_time_from_df(
+            model.utils_plot.plot_S_over_time_from_df(
                 self.all_s_over_time, filters=p, bins_per_decade=10,
-                title=model.utils.build_plot_title("S over time", p),
+                title=model.utils_plot.build_plot_title("S over time", p),
                 show=self._show
             )
         if "rg_over_time" in plot_list:
-            model.utils.plot_r_gyr_over_time_from_df(
+            model.utils_plot.plot_r_gyr_over_time_from_df(
                 self.all_rg_over_time, filters=p, bins_per_decade=10,
-                title=model.utils.build_plot_title("Radius of Gyration over time", p),
+                title=model.utils_plot.build_plot_title("Radius of Gyration over time", p),
                 show=self._show
             )
         if "aggregate_grid" in plot_list:
             if self.aggregate_grid is not None:
                 pg_with_n = {**pg, "u_n": self.aggregate_grid_user_count}
-                model.utils.plot_aggregate_grid(
+                model.utils_plot.plot_aggregate_grid(
                     self.aggregate_grid, filters=pg_with_n,
-                    title=model.utils.build_plot_title("Aggregate Grid", pg_with_n),
-                    mask_center= p["grid"] and not p.get("random_start", False),
+                    title=model.utils_plot.build_plot_title("Aggregate Grid", pg_with_n),
+                    mask_center= p["grid"] and p.get("starting_position", "centered") == "centered",
                     show=self._show
                 )
             else:
@@ -726,21 +1145,21 @@ class Simulation:
             if self.batch_grids:
                 for batch_id, grid, batch_user_count in self.batch_grids:
                     pg_with_n = {**pg, "u_n": batch_user_count}
-                    model.utils.plot_aggregate_grid(
+                    model.utils_plot.plot_aggregate_grid(
                         grid, filters=pg_with_n,
-                        title=model.utils.build_plot_title(f"Grid - {batch_id}", pg_with_n),
+                        title=model.utils_plot.build_plot_title(f"Grid - {batch_id}", pg_with_n),
                         batch_id=batch_id,
-                        mask_center= p["grid"] and not p.get("random_start", False),
+                        mask_center= p["grid"] and p.get("starting_position", "centered") == "centered",
                         show=self._show
                     )
             else:
                 logger.warning("No batch-level aggregate grids available to plot.")
         if "batch_stats" in plot_list:
             if self.batch_stats_list:
-                model.utils.print_batch_stats(
+                model.utils_plot.print_batch_stats(
                     self.batch_stats_list,
                     filters=pg,
-                    title=model.utils.build_plot_title("Batch Stats", pg),
+                    title=model.utils_plot.build_plot_title("Batch Stats", pg),
                 )
             else:
                 logger.warning("No batch stats available to print.")
@@ -755,24 +1174,27 @@ class Simulation:
 
         Folder hierarchy:
             <project_root>/<data_type>/
-                ro_{ro}_gamma_{gamma}_a_{a_param}_b_{b_param}_time_{time}/
+                ro_{ro}_g_{gamma}_a_{a}_b_{b}_t_{time}/
                     {YYYYMMDD_HHMMSS_ffffff}/
 
         When grid_params is provided, the parameter folder is extended with
         grid dimensions:
-                ro_{ro}_..._time_{time}_clen_{cell_lenght}_cnum_{cell_number}/
+                ro_{ro}_..._t_{time}_cl_{cell_lenght}_cn_{cell_number}/
 
-        The single-token keys ``clen``, ``cnum``, and ``rstart`` are used
+        The single-token keys ``cl``, ``cn``, and ``rs`` are used
         so that the folder-name parser in the data loaders can split on
         ``_`` and pair tokens unambiguously.
 
-        When a grid is active and ``random_start=True`` is present in
-        params, the suffix ``_rstart_yes`` is appended to distinguish
+        When a grid is active and ``starting_position="normal"`` is present in
+        params, the suffix ``_rs_y`` is appended to distinguish
         random-origin runs from fixed-origin ones.
 
         When ``epr_fraction`` is present in params and < 1.0, the suffix
-        ``_efrac_{epr_fraction}`` is appended to distinguish CF runs from
+        ``_ef_{epr_fraction}`` is appended to distinguish CF runs from
         pure EPR runs.
+
+        When ``epr_fraction`` < 1.0 and ``cf_type`` is present in params,
+        the suffix ``_cf_{cf_type}`` is appended (e.g. ``_cf_uk``, ``_cf_ik``).
 
         Parameters
         ----------
@@ -780,7 +1202,8 @@ class Simulation:
             e.g. "raw_data" or "analysis_data".
         params : dict
             Must contain "ro", "gamma", "a_param", "b_param", "time".
-            Optional: "random_start" (bool), "epr_fraction" (float).
+            Optional: "starting_position" (str), "epr_fraction" (float),
+            "cf_type" (str, only written when epr_fraction < 1.0).
         grid_params : dict, optional
             When provided, must contain "cell_lenght" and "cell_number".
 
@@ -792,30 +1215,127 @@ class Simulation:
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         base_folder  = os.path.join(project_root, data_type)
 
-        efrac_suffix = (
-            f"_efrac_{params['epr_fraction']}"
-            if params.get("epr_fraction", 1.0) < 1.0
-            else ""
-        )
+        efrac   = float(params.get("epr_fraction", 1.0))
+        sp      = params.get("starting_position", "centered")
+        cf_type = params.get("cf_type", None)
+
+        # Append cf_type only when a CF phase is actually present
+        cf_part = f"_cf_{cf_type}" if (efrac < 1.0 and cf_type is not None) else ""
+
+        # Map starting_position to single-letter abbreviation: c / r / n
+        _sp_abbr = {"centered": "c", "random": "r", "normal": "n"}.get(sp, "c")
 
         if grid_params is None:
             param_folder = os.path.join(
                 base_folder,
-                f"ro_{params['ro']}_gamma_{params['gamma']}"
-                f"_a_{params['a_param']}_b_{params['b_param']}_time_{params['time']}"
-                f"{efrac_suffix}"
-        )
-            
+                f"ro_{params['ro']}_g_{params['gamma']}"
+                f"_a_{params['a_param']}_b_{params['b_param']}_t_{params['time']}"
+                f"_sp_{_sp_abbr}"
+                f"_ef_{efrac}"
+                f"{cf_part}"
+            )
         else:
-            rstart_suffix = "_rstart_yes" if params.get("random_start", False) else ""
             param_folder = os.path.join(
                 base_folder,
-                f"ro_{params['ro']}_gamma_{params['gamma']}"
-                f"_a_{params['a_param']}_b_{params['b_param']}_time_{params['time']}"
-                f"_clen_{grid_params['cell_lenght']}_cnum_{grid_params['cell_number']}"
-                f"{rstart_suffix}"
-                f"{efrac_suffix}"
-        )    
+                f"ro_{params['ro']}_g_{params['gamma']}"
+                f"_a_{params['a_param']}_b_{params['b_param']}_t_{params['time']}"
+                f"_cl_{grid_params['cell_lenght']}_cn_{grid_params['cell_number']}"
+                f"_sp_{_sp_abbr}"
+                f"_ef_{efrac}"
+                f"{cf_part}"
+            )
         run_folder = os.path.join(param_folder, datetime.now().strftime("%Y%m%d_%H%M%S_%f"))
+        os.makedirs(run_folder, exist_ok=True)
+        return run_folder
+
+    def _make_combined_run_folder(self, data_type, base_params, resume_params, grid_params=None):
+        """
+        Create and return a timestamped run folder under a two-level parameter
+        hierarchy for chained (load → resume) simulations.
+
+        Folder hierarchy
+        ----------------
+        <project_root>/<data_type>/
+            <base_param_folder>/        ← built from base_params  (the loaded batch)
+                <resume_param_folder>/  ← built from resume_params (the new simulation)
+                    {YYYYMMDD_HHMMSS_ffffff}/
+
+        Both param folder names follow the same naming convention as
+        _make_run_folder(): ro / gamma / a / b / time [/ clen / cnum]
+        [/ rstart_yes] [/ efrac_X].
+
+        Parameters
+        ----------
+        data_type : str
+            Root directory name, e.g. "combined_raw_data" or
+            "combined_analysis_data".
+        base_params : dict
+            Parameters of the original loaded batch.
+            Must contain "ro", "gamma", "a_param", "b_param", "time".
+        resume_params : dict
+            Parameters used for the resume phase.
+            Must contain "ro", "gamma", "a_param", "b_param", "time".
+        grid_params : dict, optional
+            When provided, must contain "cell_lenght" and "cell_number".
+            Applied to both folder levels.
+
+        Returns
+        -------
+        str
+            Path to the newly created timestamped run folder.
+        """
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        base_folder  = os.path.join(project_root, data_type)
+
+        # Shared physical params (must match between base and resume)
+        ro      = base_params["ro"]
+        gamma   = base_params["gamma"]
+        a_param = base_params["a_param"]
+        b_param = base_params["b_param"]
+        sp      = base_params.get("starting_position", "centered")
+
+        t0 = base_params["time"]
+        t1 = resume_params["time"]
+
+        ef0 = float(base_params.get("epr_fraction", 1.0))
+        ef1 = float(resume_params.get("epr_fraction", 1.0))
+        ef_part = f"_ef0_{ef0}_ef1_{ef1}"
+
+        # Append cf_type tokens only when a CF phase was/is active
+        cf0 = base_params.get("cf_type", None)
+        cf1 = resume_params.get("cf_type", None)
+        cf_part = ""
+        if ef0 < 1.0 and cf0 is not None:
+            cf_part += f"_cf0_{cf0}"
+        if ef1 < 1.0 and cf1 is not None:
+            cf_part += f"_cf1_{cf1}"
+
+        _sp_abbr = {"centered": "c", "random": "r", "normal": "n"}.get(sp, "c")
+
+        if grid_params is not None:
+            param_folder_name = (
+                f"ro_{ro}_g_{gamma}"
+                f"_a_{a_param}_b_{b_param}"
+                f"_t0_{t0}_t1_{t1}"
+                f"_cl_{grid_params['cell_lenght']}_cn_{grid_params['cell_number']}"
+                f"_sp_{_sp_abbr}"
+                f"{ef_part}"
+                f"{cf_part}"
+            )
+        else:
+            param_folder_name = (
+                f"ro_{ro}_g_{gamma}"
+                f"_a_{a_param}_b_{b_param}"
+                f"_t0_{t0}_t1_{t1}"
+                f"_sp_{_sp_abbr}"
+                f"{ef_part}"
+                f"{cf_part}"
+            )
+
+        run_folder = os.path.join(
+            base_folder,
+            param_folder_name,
+            datetime.now().strftime("%Y%m%d_%H%M%S_%f"),
+        )
         os.makedirs(run_folder, exist_ok=True)
         return run_folder
