@@ -35,7 +35,7 @@ class Simulation:
         resume(simulate_params, grid_params)
             Continue a simulation on users already loaded in memory (self.users_list must be
             populated either by run() or by _reconstruct_users_from_raw()).
-            simulate_params["time"] is interpreted as the *new* absolute clock target: users
+            resume_params["time"] is interpreted as the *new* absolute clock target: users
             will run until their clock reaches this value.
 
         _reconstruct_users_from_raw(load_params, grid_params)
@@ -109,11 +109,10 @@ class Simulation:
         user_number  = simulate_params["user_number"]
         time         = simulate_params["time"]
         grid_exists       = simulate_params["grid"]
-        #Cambiare la gestione dei valori predefiniti negli attributi che seguono
-        starting_position = simulate_params.get("starting_position", "centered")
-        epr_fraction      = simulate_params.get("epr_fraction", 1.0)
-        top_k        = simulate_params.get("top_k", 10)
-        cf_type      = simulate_params.get("cf_type", "uk")
+        starting_position = simulate_params["starting_position"]
+        epr_fraction      = simulate_params["epr_fraction"]
+        top_k        = simulate_params["top_k"]
+        cf_type      = simulate_params["cf_type"]
 
         if epr_fraction <= 0:
             raise ValueError(
@@ -137,9 +136,11 @@ class Simulation:
             self.grid_cell_number = grid_params["cell_number"]
             if starting_position in ("random", "normal"):
                 self._spatial_center = (self.grid_cell_lenght * self.grid_cell_number) / 2
+                #This definition is done following the grid logic, where the grid is defined from (0,0) to
+                #(cell_lenght*cell_number, cell_lenght*cell_number), so the center is in the middle of the grid, not at (0,0)
 
         epr_time  = epr_fraction * time
-        milestone = max(1, user_number // 10)
+        milestone = max(1, user_number // 10) #10% progress milestones for logging
         logger.info(
             f"Starting EPR phase for {user_number} users "
             f"(epr_fraction={epr_fraction}, epr_time={epr_time})..."
@@ -219,6 +220,10 @@ class Simulation:
                     while user.clock < t_end:
                         user.make_decision_cf(neighbors, cf_type)
 
+        #TO BE SOLVED!!! Here we are trying to remove what is generated past the limit time, that is the last step for each user,
+        #but this solution is not working properly, because what is updated in make_decision and make_decision_cf are user_history,
+        #venue_history and grid.matrix, so we need to find a way to remove the last step from all of them. We are correctly removing user_history,
+        #partially venue history and the grid is not changed at all.
         for user in self.users_list:
             header    = user.user_history[0]
             clock_idx = header.index("Clock")
@@ -266,12 +271,12 @@ class Simulation:
 
         ro           = simulate_params["ro"]
         gamma        = simulate_params["gamma"]
-        a_param      = simulate_params["b_param"]   # kept for symmetry; not used in loop
+        a_param      = simulate_params["a_param"]   # kept for symmetry; not used in loop
         b_param      = simulate_params["b_param"]
         time_target  = simulate_params["time"]
-        epr_fraction = simulate_params.get("epr_fraction", 1.0)
-        top_k        = simulate_params.get("top_k", 10)
-        cf_type      = simulate_params.get("cf_type", "uk")
+        epr_fraction = simulate_params["epr_fraction"]
+        top_k        = simulate_params["top_k"]
+        cf_type      = simulate_params["cf_type"]
 
         self.ro               = ro
         self.gamma            = gamma
@@ -288,8 +293,6 @@ class Simulation:
         n_users   = len(self.users_list)
         milestone = max(1, n_users // 10)
 
-        ##PER ORA LO LASCIO COSì: Si introduce un artificio nello scorrimento del tempo,
-        ##Da verificare se è problematico o no
         # Compute the effective start of this resume window from the users' clocks
         current_clocks = [u.clock for u in self.users_list]
         resume_start   = sum(current_clocks) / n_users   # approximate; each user may differ
@@ -313,7 +316,7 @@ class Simulation:
             # Pure EPR resume
             # ---------------------------------------------------------------
             for i, user in enumerate(self.users_list):
-                while user.clock < time_target:
+                while user.clock < time_target: #for each user the clock is different and is the same as the last one in user_history.
                     user.make_decision()
                 if (i + 1) % milestone == 0 or (i + 1) == n_users:
                     pct = ((i + 1) / n_users) * 100

@@ -18,7 +18,7 @@ def main():
     # Choose mode
     # ==========================================================
 
-    mode = "p"  # Options (short aliases):
+    mode = "lsa"  # Options (short aliases):
                         #   "s"     run simulation, save raw_data only
                         #   "a"    - load raw_data, compute & save analysis_data
                         #   "sa"   - simulate then analyse without reloading from disk
@@ -35,7 +35,7 @@ def main():
         "gamma": 0.2,
         "a_param": 0.75,
         "b_param": 0.6,
-        "user_number": 10000,
+        "user_number": 20,
         "time": 10000,
         "grid" : True,
         "starting_position": "normal",   # "centered" | "random" | "normal"
@@ -107,7 +107,7 @@ def main():
         "grid": True,
         "starting_position": "normal",
         "epr_fraction": 0.3,      # include only if the original run used CF
-        "cf_type": "uk",          # must match the cf_type of the original run
+        "cf_type": "mf",          # must match the cf_type of the original run
         # "batch_id": "20240601_153012_004321",  # omit to use the most recent batch
     }
 
@@ -127,10 +127,10 @@ def main():
         "a_param": 0.75,
         "b_param": 0.6,
         "time": 20000,            # absolute target: users will run until clock=20000
-        "grid": True,
-        "starting_position": "normal",
+        #"grid": False,
+        #"starting_position": "normal",
         "epr_fraction": 0.3,      # 1.0 = pure EPR resume; <1.0 = EPR then CF
-        "cf_type": "uk",          # CF algorithm for the resume phase: "uk" or "ik"
+        "cf_type": "mf",          # CF algorithm for the resume phase: "uk" or "ik"
         "top_k": 10,
     }
 
