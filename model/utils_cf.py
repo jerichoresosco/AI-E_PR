@@ -6,21 +6,35 @@ import model.utils
 
 logger = logging.getLogger(__name__)
 
-def make_decision_cf(user, neighbors, cf_type):
 
+def make_decision_cf(user, neighbors, cf_type, weight_by_similarity=True):
+    """
+    Drive a single mobility step for a CF-augmented user.
+
+    Parameters
+    ----------
+    user                 : User
+    neighbors            : list  - pre-built CF neighbor structure for this user
+    cf_type              : "uk" | "ik" | "mf"
+    weight_by_similarity : bool (default True)
+        Passed through to the exploration functions.
+        True  → venue sampling is weighted by similarity / recommendation score
+        False → flat merge; all candidate venues are sampled uniformly
+    """
     P_new = user.simulation.ro * user.num_distinct_venues ** (-user.simulation.gamma)
 
     if np.random.random_sample() >= P_new:
         user.returning()               # classic EPR return
     else:
         if cf_type == "uk":
-            if not _uk_exploring(user, neighbors):
+            if not _uk_exploring(user, neighbors,
+                                 weight_by_similarity=weight_by_similarity):
                 user.exploring()           # EPR fallback
         elif cf_type == "ik":
-            if not _ik_exploring(user, neighbors):
+            if not _venue_list_exploring(user, neighbors, cf_label="IK"):
                 user.exploring()           # EPR fallback
         elif cf_type == "mf":
-            if not _mf_exploring(user, neighbors):
+            if not _venue_list_exploring(user, neighbors, cf_label="MF"):
                 user.exploring()           # EPR fallback
         else:
             raise ValueError(f"Unknown cf_type '{cf_type}'. Expected 'uk', 'ik', or 'mf'.")
@@ -103,6 +117,207 @@ def _resolve_check_run_dir(check_run_dir, cf_type, simulate_params,
     return check_run_dir
 
 
+def _build_uv_matrix(users_list):
+    """
+    Build the user-venue visit-count matrix and associated index structures.
+
+    Iterates venue_history once per user to collect the global venue list,
+    coordinates metadata, and fill the count matrix.
+
+    Returns
+    -------
+    uv_matrix    : np.ndarray, shape (n_users, n_venues)
+    all_venues   : list of venue names (column order)
+    venue_to_idx : dict {venue_name: col_index}
+    venue_meta   : dict {venue_name: (x, y)}
+    """
+    all_venues, venue_set = [], set()
+    venue_meta = {}
+    for user in users_list:
+        for row in user.venue_history[1:]:
+            if row[0] not in venue_set:
+                venue_set.add(row[0])
+                all_venues.append(row[0])
+                venue_meta[row[0]] = (row[2], row[3])
+
+    venue_to_idx = {v: i for i, v in enumerate(all_venues)}
+    n_venues     = len(all_venues)
+    n_users      = len(users_list)
+
+    uv_matrix = np.zeros((n_users, n_venues), dtype=float)
+    for ui, user in enumerate(users_list):
+        for row in user.venue_history[1:]:
+            uv_matrix[ui, venue_to_idx[row[0]]] = row[1]
+
+    return uv_matrix, all_venues, venue_to_idx, venue_meta
+
+
+def _set_user_exploration_state(user, chosen):
+    """
+    Apply an exploration outcome to the user object.
+
+    `chosen` must be a sequence with at minimum:
+        chosen[0]  : venue name
+        chosen[2]  : x coordinate
+        chosen[3]  : y coordinate
+    """
+    user.state = "E"
+    user.num_distinct_venues += 1
+    user.next_position = (chosen[2], chosen[3])
+    user.destination   = chosen[0]
+    user._venue_index[user.destination] = len(user.venue_history)
+    user.delta_r = None
+    user.angle   = None
+
+
+def _build_mega_user_uk(neighbors, my_venues, weight_by_similarity=True):
+    """
+    Merge the venue histories of the k similar User neighbors into a single
+    virtual user (the "mega-user") for UK exploration.
+
+    Venues already visited by the current user are excluded.
+
+    Parameters
+    ----------
+    neighbors             : list of (User, similarity_score)
+    my_venues             : set of venue names already visited by the current user
+    weight_by_similarity  : bool (default True)
+        True  → mega_weight[venue] += similarity * visit_count
+        False → mega_weight[venue] += visit_count  (flat merge, similarity ignored)
+
+    Returns
+    -------
+    venue_rows   : list of venue rows [name, count, x, y]
+    mega_weights : np.ndarray of aggregated counts (same order)
+    """
+    aggregated = {}   # venue_name -> [row, accumulated_weight]
+
+    for neighbor_user, sim in neighbors:
+        contribution_factor = sim if weight_by_similarity else 1.0
+        for row in neighbor_user.venue_history[1:]:
+            vname = row[0]
+            if vname in my_venues:
+                continue
+            w = contribution_factor * row[1]
+            if vname in aggregated:
+                aggregated[vname][1] += w
+            else:
+                aggregated[vname] = [row, w]
+
+    if not aggregated:
+        return [], np.array([], dtype=float)
+
+    venue_rows   = [v[0] for v in aggregated.values()]
+    mega_weights = np.array([v[1] for v in aggregated.values()], dtype=float)
+    return venue_rows, mega_weights
+
+
+def _build_mega_user_venue_list(neighbors, my_venues):
+    """
+    Build the mega-user for IK and MF exploration.
+
+    IK and MF pre-compute a flat list of (venue_row, score) tuples where
+    each score already encodes the item-item or latent-factor recommendation
+    strength. Sampling is always weighted by these scores — no flat option.
+    Venues visited since the last rebuild are filtered out here.
+
+    Parameters
+    ----------
+    neighbors  : list of ([vname, 1, x, y], score)
+    my_venues  : set of venue names already visited by the current user
+
+    Returns
+    -------
+    venue_rows   : list of venue rows
+    mega_weights : np.ndarray of scores
+    """
+    valid = [(row, score) for row, score in neighbors if row[0] not in my_venues]
+    if not valid:
+        return [], np.array([], dtype=float)
+
+    venue_rows   = [r for r, _ in valid]
+    mega_weights = np.array([s for _, s in valid], dtype=float)
+    return venue_rows, mega_weights
+
+
+# =============================================================================
+# EXPLORING FUNCTIONS
+# =============================================================================
+
+
+def _uk_exploring(user, neighbors, weight_by_similarity=True):
+    """
+    UK exploration step using the mega-user strategy.
+
+    The k similar neighbors are merged into a single virtual user and a
+    venue is sampled proportionally to the aggregated weights.
+
+    Parameters
+    ----------
+    weight_by_similarity : bool (default True)
+        True  → weight[venue] = sum( similarity * visit_count )
+        False → weight[venue] = sum( visit_count )  (flat merge)
+
+    Returns False to trigger EPR fallback when no valid venues remain.
+
+    On success sets: state="E", num_distinct_venues, next_position,
+    destination, _venue_index entry, delta_r=None, angle=None.
+    """
+    if not neighbors:
+        logger.warning(f"User {user.uid}: UK exploration skipped - no neighbors.")
+        return False
+
+    weights = np.array([w for _, w in neighbors], dtype=float)
+    if weights.sum() == 0:
+        logger.warning(f"User {user.uid}: UK exploration skipped - zero similarity weights.")
+        return False
+
+    my_venues = set(user._venue_index.keys())
+    venue_rows, mega_weights = _build_mega_user_uk(neighbors, my_venues,
+                                                   weight_by_similarity=weight_by_similarity)
+
+    if len(venue_rows) == 0:
+        logger.warning(f"User {user.uid}: UK exploration - EPR fallback (no valid venues in mega-user).")
+        return False
+
+    probs      = mega_weights / mega_weights.sum()
+    chosen_idx = np.random.choice(len(venue_rows), p=probs)
+    chosen     = venue_rows[chosen_idx]
+
+    _set_user_exploration_state(user, chosen)
+    return True
+
+
+def _venue_list_exploring(user, neighbors, cf_label):
+    """
+    Shared exploration step for IK and MF.
+
+    Sampling is always weighted by the pre-computed recommendation scores.
+    Returns False to trigger EPR fallback when no valid venues remain.
+
+    On success sets: state="E", num_distinct_venues, next_position,
+    destination, _venue_index entry, delta_r=None, angle=None.
+    """
+    if not neighbors:
+        logger.warning(f"User {user.uid}: {cf_label} exploration skipped - no recommended venues.")
+        return False
+
+    my_venues = set(user._venue_index.keys())
+    venue_rows, mega_weights = _build_mega_user_venue_list(neighbors, my_venues)
+    #Mega user needed to exlude venues visited since last rebuild
+
+    if len(venue_rows) == 0:
+        logger.warning(f"User {user.uid}: {cf_label} exploration - all recommended venues already visited.")
+        return False
+
+    probs      = mega_weights / mega_weights.sum()
+    chosen_idx = np.random.choice(len(venue_rows), p=probs)
+    chosen     = venue_rows[chosen_idx]
+
+    _set_user_exploration_state(user, chosen)
+    return True
+
+
 # =============================================================================
 # USER-KNN  (cf_type = "uk")
 # =============================================================================
@@ -114,24 +329,13 @@ def _build_uk_data(users_list, top_k, simulate_params,
     n_users = len(users_list)
 
     # ------------------------------------------------------------------
-    # User–venue visit-count matrix
+    # Build user-venue matrix
     # ------------------------------------------------------------------
-    all_venues, venue_set = [], set()
-    for user in users_list:
-        for row in user.venue_history[1:]:
-            if row[0] not in venue_set:
-                venue_set.add(row[0])
-                all_venues.append(row[0])
-    venue_to_idx = {v: i for i, v in enumerate(all_venues)}
+    uv_matrix, all_venues, venue_to_idx, _ = _build_uv_matrix(users_list)
     n_venues = len(all_venues)
 
-    uv_matrix = np.zeros((n_users, n_venues), dtype=float)
-    for ui, user in enumerate(users_list):
-        for row in user.venue_history[1:]:
-            uv_matrix[ui, venue_to_idx[row[0]]] = row[1]
-
     # ------------------------------------------------------------------
-    # Cosine similarity (user × user)
+    # Cosine similarity (user x user)
     # ------------------------------------------------------------------
     norms = np.linalg.norm(uv_matrix, axis=1, keepdims=True)
     norms[norms == 0] = 1.0
@@ -151,7 +355,7 @@ def _build_uk_data(users_list, top_k, simulate_params,
     np.savetxt(sim_matrix_path, sim_matrix, fmt="%.6f")
 
     # ------------------------------------------------------------------
-    # Build neighbor lists
+    # Build neighbor lists  (top_k similar users per user)
     # ------------------------------------------------------------------
     top_k_actual = min(top_k, n_users - 1)
     cf_neighbors = []
@@ -197,56 +401,6 @@ def _build_uk_data(users_list, top_k, simulate_params,
     return cf_neighbors, check_run_dir
 
 
-def _uk_exploring(user, neighbors):
-    """
-    UK exploration step.
-
-    Searches for a venue visited by a similar user that this user has not
-    yet visited. Neighbors tried in a single weighted-random permutation.
-    Returns False to trigger EPR fallback when all neighbors are exhausted.
-
-    On success sets: state="E", num_distinct_venues, next_position,
-    destination, _venue_index entry, delta_r=None, angle=None.
-    """
-    if not neighbors:
-        logger.warning(f"User {user.uid}: UK exploration skipped – no neighbors.")
-        return False
-
-    neighbor_users = [u for u, _ in neighbors]
-    weights = np.array([w for _, w in neighbors], dtype=float)
-    if weights.sum() == 0:
-        logger.warning(f"User {user.uid}: UK exploration skipped – zero similarity weights.")
-        return False
-    probs = weights / weights.sum()
-
-    my_venues = set(user._venue_index.keys())
-    order = np.random.choice(len(neighbor_users), size=len(neighbor_users),
-                             replace=False, p=probs)
-
-    for idx in order:
-        neighbor = neighbor_users[idx]
-        candidate_rows = [row for row in neighbor.venue_history[1:]
-                          if row[0] not in my_venues]
-        if not candidate_rows:
-            continue
-
-        visit_counts = np.array([row[1] for row in candidate_rows], dtype=float)
-        p = visit_counts / visit_counts.sum()
-        chosen = candidate_rows[np.random.choice(len(candidate_rows), p=p)]
-
-        user.state = "E"
-        user.num_distinct_venues += 1
-        user.next_position = (chosen[2], chosen[3])
-        user.destination   = chosen[0]
-        user._venue_index[user.destination] = len(user.venue_history)
-        user.delta_r = None
-        user.angle   = None
-        return True
-
-    logger.warning(f"User {user.uid}: UK exploration – EPR fallback (no valid venues).")
-    return False
-
-
 # =============================================================================
 # ITEM-KNN  (cf_type = "ik")
 # =============================================================================
@@ -258,42 +412,18 @@ def _build_ik_data(users_list, top_k, simulate_params,
     n_users = len(users_list)
 
     # ------------------------------------------------------------------
-    # Collect all venues globally, build index
+    # Build user-venue matrix + metadata
     # ------------------------------------------------------------------
-    all_venues, venue_set = [], set()
-    for user in users_list:
-        for row in user.venue_history[1:]:
-            if row[0] not in venue_set:
-                venue_set.add(row[0])
-                all_venues.append(row[0])
-    venue_to_idx = {v: i for i, v in enumerate(all_venues)}
+    uv_matrix, all_venues, venue_to_idx, venue_meta = _build_uv_matrix(users_list)
     n_venues = len(all_venues)
 
-    # venue metadata: [name, x, y]
-    venue_meta = {}
-    for user in users_list:
-        for row in user.venue_history[1:]:
-            if row[0] not in venue_meta:
-                venue_meta[row[0]] = (row[2], row[3])
-
     # ------------------------------------------------------------------
-    # User–venue matrix  (needed both for co-visit and per-user scores)
+    # Item-item cosine similarity 
     # ------------------------------------------------------------------
-    uv_matrix = np.zeros((n_users, n_venues), dtype=float)
-    for ui, user in enumerate(users_list):
-        for row in user.venue_history[1:]:
-            uv_matrix[ui, venue_to_idx[row[0]]] = row[1]
-
-    # ------------------------------------------------------------------
-    # Item–item cosine similarity via co-visit matrix
-    # V = uv_matrix^T @ uv_matrix  (n_venues × n_venues)
-    # Then normalise rows to get cosine similarities.
-    # ------------------------------------------------------------------
-    V = uv_matrix.T @ uv_matrix          # co-visit counts
-    norms = np.linalg.norm(V, axis=1, keepdims=True)
+    norms = np.linalg.norm(uv_matrix, axis=0, keepdims=True)  
     norms[norms == 0] = 1.0
-    V_norm    = V / norms
-    sim_items = V_norm @ V_norm.T        # item-item cosine similarity
+    M_norm = uv_matrix / norms     
+    sim_items = M_norm.T @ M_norm   
     np.fill_diagonal(sim_items, 0.0)
 
     # ------------------------------------------------------------------
@@ -308,27 +438,40 @@ def _build_ik_data(users_list, top_k, simulate_params,
     np.savetxt(sim_matrix_path, sim_items, fmt="%.6f")
 
     # ------------------------------------------------------------------
-    # For each user, score unvisited venues and keep top_k
+    # For each user we first compute the scores for the k-most similar venues, normalized by the sum
+    #of the k-similarities (as 2.15 in Aggarwal's book). Then we keep only the top_k venues with positive scores as neighbors
     # ------------------------------------------------------------------
     cf_neighbors = []
     for ui, user in enumerate(users_list):
-        user_vec = uv_matrix[ui]                         # (n_venues,) visit counts
+        user_vec     = uv_matrix[ui]
         visited_mask = user_vec > 0
+        visited_idx  = np.where(visited_mask)[0]
 
         if not visited_mask.any():
-            logger.warning(f"User {ui} has no visited venues, so no recommendations.")
+            logger.warning(f"User {ui} has no visited venues, skipping recommendations.")
             cf_neighbors.append([])
             continue
 
-        # score(v) = sum_w  sim_items[w, v] * visits_u(w)   for w in visited(u)
-        # = (sim_items.T @ user_vec)[v]   — but we want sim_items[w, v], so:
-        # score = sim_items.T @ user_vec  (shape: n_venues)
-        scores = sim_items.T @ user_vec        # shape: (n_venues,)
+        unvisited_idx = np.where(~visited_mask)[0]
+        scores = np.zeros(n_venues)
 
-        # Zero out already-visited venues
-        scores[visited_mask] = 0.0
+        for vi in unvisited_idx:
+            sims_to_visited = sim_items[vi, visited_idx]
+            k_neighbors = min(top_k, len(visited_idx))
+            top_w_local = np.argsort(sims_to_visited)[::-1][:k_neighbors]
+            #Per ora lo terrei così, come è nel libro, da capire se per noi ha senso
+            #Anche perché questo k non ha lo stesso ruolo del k successivo.
+            #Il primo k serve per calcolare gli scores, il secondo serve per limitare le raccomandazioni
 
-        # Keep top_k by score
+            sim_vals  = sims_to_visited[top_w_local]
+            rate_vals = user_vec[visited_idx[top_w_local]]
+
+            denom = np.sum(np.abs(sim_vals))
+            if denom > 0:
+                scores[vi] = np.dot(sim_vals, rate_vals) / denom
+            else:
+                logger.warning(f"User {ui}, venue {vi}: zero denominator, score set to 0.")
+
         positive_mask = scores > 0
         if not positive_mask.any():
             logger.warning(f"User {ui} has visited venues but no positive-score recommendations.")
@@ -336,7 +479,7 @@ def _build_ik_data(users_list, top_k, simulate_params,
             continue
 
         pos_indices = np.where(positive_mask)[0]
-        k = min(top_k, len(pos_indices))
+        k           = min(top_k, len(pos_indices))
         top_indices = pos_indices[np.argsort(scores[pos_indices])[::-1]][:k]
 
         user_neighbors = []
@@ -359,48 +502,6 @@ def _build_ik_data(users_list, top_k, simulate_params,
         f"top_k={top_k}, interval={interval_label}"
     )
     return cf_neighbors, check_run_dir
-
-
-def _ik_exploring(user, neighbors):
-    """
-    IK exploration step.
-
-    `neighbors` : list of (venue_row, score)  — pre-computed unvisited venues
-        sorted by descending recommendation score.
-
-    Selects a venue proportionally to its recommendation score.
-    Returns False to trigger EPR fallback when neighbors is empty.
-
-    On success sets: state="E", num_distinct_venues, next_position,
-    destination, _venue_index entry, delta_r=None, angle=None.
-    """
-    if not neighbors:
-        logger.warning(f"User {user.uid}: IK exploration skipped – no recommended venues.")
-        return False
-
-    my_venues = set(user._venue_index.keys())
-
-    # Filter out any venue the user has since visited (clock may have advanced)
-    valid = [(row, score) for row, score in neighbors if row[0] not in my_venues]
-    if not valid:
-        logger.warning(f"User {user.uid}: IK exploration – all recommended venues already visited.")
-        return False
-
-    rows   = [r for r, _ in valid]
-    scores = np.array([s for _, s in valid], dtype=float)
-    probs  = scores / scores.sum()
-
-    chosen_idx = np.random.choice(len(rows), p=probs)
-    chosen     = rows[chosen_idx]
-
-    user.state = "E"
-    user.num_distinct_venues += 1
-    user.next_position = (chosen[2], chosen[3])
-    user.destination   = chosen[0]
-    user._venue_index[user.destination] = len(user.venue_history)
-    user.delta_r = None
-    user.angle   = None
-    return True
 
 
 # =============================================================================
@@ -436,56 +537,31 @@ def _build_mf_data(users_list, top_k, simulate_params,
     n_users = len(users_list)
 
     # ------------------------------------------------------------------
-    # Collect all venues globally and build index + metadata
+    # Build user-venue matrix + metadata
     # ------------------------------------------------------------------
-    all_venues, venue_set = [], set()
-    for user in users_list:
-        for row in user.venue_history[1:]:
-            if row[0] not in venue_set:
-                venue_set.add(row[0])
-                all_venues.append(row[0])
-    venue_to_idx = {v: i for i, v in enumerate(all_venues)}
+    uv_matrix, all_venues, venue_to_idx, venue_meta = _build_uv_matrix(users_list)
     n_venues = len(all_venues)
-
-    venue_meta = {}
-    for user in users_list:
-        for row in user.venue_history[1:]:
-            if row[0] not in venue_meta:
-                venue_meta[row[0]] = (row[2], row[3])
-
-    # ------------------------------------------------------------------
-    # User–venue visit-count matrix  (rows = users, cols = venues)
-    # ------------------------------------------------------------------
-    uv_matrix = np.zeros((n_users, n_venues), dtype=float)
-    for ui, user in enumerate(users_list):
-        for row in user.venue_history[1:]:
-            uv_matrix[ui, venue_to_idx[row[0]]] = row[1]
 
     # ------------------------------------------------------------------
     # Truncated SVD
-    # np.linalg.svd returns the *full* decomposition; we take only the
-    # leading k components, which is equivalent to the truncated SVD and
-    # captures the dominant latent structure.
+    # np.linalg.svd returns the full decomposition; we take only the
+    # leading k components to capture the dominant latent structure.
     # ------------------------------------------------------------------
     k = min(num_latent_factors, n_users, n_venues)
     logger.info(f"Performing truncated SVD with k={k} latent factors...")
 
     U, sigma, VT = np.linalg.svd(uv_matrix, full_matrices=False)
-    # U     : (n_users,  min(n_users, n_venues))
-    # sigma : (min(n_users, n_venues),)
-    # VT    : (min(n_users, n_venues), n_venues)
-
-    sigma_diag   = np.diag(sigma[:k])          # (k, k)
-    user_factors = U[:, :k] @ sigma_diag       # (n_users, k)
-    item_factors = VT[:k, :].T                 # (n_venues, k)
+    sigma_diag   = np.diag(sigma[:k])
+    user_factors = U[:, :k] @ sigma_diag    # (n_users, k)
+    item_factors = VT[:k, :].T              # (n_venues, k)
 
     # ------------------------------------------------------------------
-    # Predicted rating matrix  (n_users × n_venues)
+    # Predicted rating matrix  (n_users x n_venues)
     # ------------------------------------------------------------------
-    pred_matrix = user_factors @ item_factors.T   # (n_users, n_venues)
+    pred_matrix = user_factors @ item_factors.T
 
     # ------------------------------------------------------------------
-    # Resolve check folder and persist factor norms for diagnostics
+    # Resolve check folder and persist singular values for diagnostics
     # ------------------------------------------------------------------
     check_run_dir = _resolve_check_run_dir(
         check_run_dir, "mf", simulate_params, grid_exists, grid_params
@@ -504,12 +580,12 @@ def _build_mf_data(users_list, top_k, simulate_params,
         visited_mask = uv_matrix[ui] > 0
 
         if not visited_mask.any():
-            logger.warning(f"User {ui} (MF): no visited venues – skipping recommendations.")
+            logger.warning(f"User {ui} (MF): no visited venues - skipping recommendations.")
             cf_neighbors.append([])
             continue
 
-        scores = pred_matrix[ui].copy()        # (n_venues,)
-        scores[visited_mask] = 0.0             # mask already-visited venues
+        scores = pred_matrix[ui].copy()
+        scores[visited_mask] = 0.0
 
         positive_mask = scores > 0
         if not positive_mask.any():
@@ -518,7 +594,7 @@ def _build_mf_data(users_list, top_k, simulate_params,
             continue
 
         pos_indices = np.where(positive_mask)[0]
-        k_sel = min(top_k, len(pos_indices))
+        k_sel       = min(top_k, len(pos_indices))
         top_indices = pos_indices[np.argsort(scores[pos_indices])[::-1]][:k_sel]
 
         user_neighbors = []
@@ -543,58 +619,13 @@ def _build_mf_data(users_list, top_k, simulate_params,
     return cf_neighbors, check_run_dir
 
 
-def _mf_exploring(user, neighbors):
-    """
-    MF exploration step.
-
-    Identical in mechanics to _ik_exploring: `neighbors` is a list of
-    (venue_row, score) tuples pre-computed by _build_mf_data, where
-    score is the predicted rating from the latent-factor model.
-
-    Venues are sampled proportionally to their predicted score, giving
-    higher-rated unvisited places a greater probability of selection.
-
-    Returns False to trigger EPR fallback when no valid venues remain.
-
-    On success sets: state="E", num_distinct_venues, next_position,
-    destination, _venue_index entry, delta_r=None, angle=None.
-    """
-    if not neighbors:
-        logger.warning(f"User {user.uid}: MF exploration skipped - no recommended venues.")
-        return False
-
-    my_venues = set(user._venue_index.keys())
-
-    # Filter out venues the user has visited since the last CF rebuild
-    valid = [(row, score) for row, score in neighbors if row[0] not in my_venues]
-    if not valid:
-        logger.warning(f"User {user.uid}: MF exploration - all recommended venues already visited.")
-        return False
-
-    rows   = [r for r, _ in valid]
-    scores = np.array([s for _, s in valid], dtype=float)
-    probs  = scores / scores.sum()
-
-    chosen_idx = np.random.choice(len(rows), p=probs)
-    chosen     = rows[chosen_idx]
-
-    user.state = "E"
-    user.num_distinct_venues += 1
-    user.next_position = (chosen[2], chosen[3])
-    user.destination   = chosen[0]
-    user._venue_index[user.destination] = len(user.venue_history)
-    user.delta_r = None
-    user.angle   = None
-    return True
-
-
 # =============================================================================
 # SHARED CLOCK ADVANCE (identical for all CF types)
 # =============================================================================
 
 def _advance_clock(user):
     """Sample delta_t, advance position and clock, update histories and grid."""
-    user.delta_t          = model.utils.temporal_power_law_sampling(par=user.b_param).item()
+    user.delta_t           = model.utils.temporal_power_law_sampling(par=user.b_param).item()
     user.previous_position = user.position
     user.position          = user.next_position
     user.departure         = user.user_history[-1][user.user_history[0].index("Destination")]

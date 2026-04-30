@@ -127,58 +127,6 @@ def polar_to_cartesian (delta_r, angle, position=(0,0)):
     y = delta_r*np.sin(angle)
     return (x + position[0], y + position[1])
 
-def get_trajectory_arrays(user, k_top=None):
-    """
-    Extract trajectory coordinates from user history as NumPy arrays.
-
-    This function processes the user's history data to extract x and y coordinates
-    of the trajectory, optionally filtering to include only the top-k most visited venues.
-
-    Parameters
-    ----------
-    user : User
-        An object with user_history and venue_history as lists of lists.
-    k_top : int, optional (default=None)
-        Number of top visited venues to include. If None, include all venues.
-
-    Returns
-    -------
-    x_traj : np.ndarray
-        X coordinates of the trajectory, starting with 0.
-    y_traj : np.ndarray
-        Y coordinates of the trajectory, starting with 0.
-    """
-    header = user.user_history[0]
-    data = user.user_history[1:]
-    idx_dest_x = header.index("Destination_x_coord")
-    idx_dest_y = header.index("Destination_y_coord")
-    idx_dest_name = header.index("Destination")
-
-    dest_x = np.array([row[idx_dest_x] for row in data], dtype=float)
-    dest_y = np.array([row[idx_dest_y] for row in data], dtype=float)
-    trajectory = [row[idx_dest_name] for row in data]
-
-    if k_top is not None:
-        venue_header = user.venue_history[0]
-        venue_data = user.venue_history[1:]
-        idx_venue_name = venue_header.index("Venue_name")
-        idx_visits = venue_header.index("Number of visits")
-
-        venue_visits = {row[idx_venue_name]: row[idx_visits] for row in venue_data}
-        top_k_venues = sorted(venue_visits, key=venue_visits.get, reverse=True)[:k_top]
-    else:
-        top_k_venues = None 
-
-    x_traj = [0]  
-    y_traj = [0]
-
-    for i, venue in enumerate(trajectory):
-        if (top_k_venues is None) or (venue in top_k_venues):
-            x_traj.append(dest_x[i])
-            y_traj.append(dest_y[i])
-
-    return np.array(x_traj), np.array(y_traj)
-
 
 def compute_stats(user_history_df):
     """
@@ -293,7 +241,6 @@ def compute_rg_over_time(user_history_df):
         var_y = sum_y2 / count - mean_y ** 2
 
         rg_values[i] = np.sqrt(var_x + var_y)
-
     return pd.DataFrame({"clock": clocks, "rg": rg_values})
 
 
@@ -1021,14 +968,10 @@ def compute_moran_i(batch_agg):
  
     n = grid_matrix.shape[0]
     W = lat2W(n, n, rook=True)
-    W.transform = "r"
+    W.transform = "r" #normalise rows to sum to 1
  
     mi = Moran(grid_matrix.flatten(), W)
  
-    logger.info(
-        f"Moran's I={mi.I:.4f}  E[I]={mi.EI:.4f}  "
-        f"z={mi.z_norm:.3f}  p={mi.p_norm:.4f}"
-    )
     return {
         "I":       mi.I,
         "E_I":     mi.EI,
