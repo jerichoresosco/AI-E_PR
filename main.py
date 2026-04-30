@@ -18,7 +18,7 @@ def main():
     # Choose mode
     # ==========================================================
 
-    mode = "lsa"  # Options (short aliases):
+    mode = "sa"  # Options (short aliases):
                         #   "s"     run simulation, save raw_data only
                         #   "a"    - load raw_data, compute & save analysis_data
                         #   "sa"   - simulate then analyse without reloading from disk
@@ -39,8 +39,8 @@ def main():
         "time": 10000,
         "grid" : True,
         "starting_position": "normal",   # "centered" | "random" | "normal"
-        "epr_fraction": 0.3,      # fraction of 'time' run with pure EPR before CF (1.0 = pure EPR; 0 < x < 1 enables CF phase)
-        "cf_type": "mf",          # CF algorithm: "uk" = User-KNN, "ik" = Item-KNN, "mf" = Matrix Factorization
+        "epr_fraction": 0.5,      # fraction of 'time' run with pure EPR before CF (1.0 = pure EPR; 0 < x < 1 enables CF phase)
+        "cf_type": "ik",          # CF algorithm: "uk" = User-KNN, "ik" = Item-KNN, "mf" = Matrix Factorization
         "top_k": 10,              # number of similar neighbors used in CF phase
     }
 
@@ -63,7 +63,7 @@ def main():
         "gamma": 0.2,
         "a_param": 0.75,
         "b_param": 0.6,
-        "time": 10000,
+        "time": 1000,
         "grid": True,
         "starting_position": "normal",   # must match the simulate_params value used
     }
@@ -103,10 +103,10 @@ def main():
         "gamma": 0.2,
         "a_param": 0.75,
         "b_param": 0.6,
-        "time": 10000,            # time of the ORIGINAL simulation to load
+        "time": 1000,            # time of the ORIGINAL simulation to load
         "grid": True,
         "starting_position": "normal",
-        "epr_fraction": 0.3,      # include only if the original run used CF
+        "epr_fraction": 1,      # include only if the original run used CF
         "cf_type": "mf",          # must match the cf_type of the original run
         # "batch_id": "20240601_153012_004321",  # omit to use the most recent batch
     }

@@ -861,9 +861,9 @@ class Simulation:
             else:
                 #Analyse mode: load from raw_data/ using analyse_params filters
                 logger.info("Loading raw data via analyse_params...")
-                filters = {k: v for k, v in analyse_params.items() if k != "grid"}
+                filters = {k: v for k, v in analyse_params.items() if k != "grid"} #removing grid from filters
                 if analyse_params["grid"] == True:
-                    filters.update(grid_params)
+                    filters.update(grid_params) #Adding grid values after bool value has been removed (if is the case)
                 loaded = model.utils.load_raw_parquet(
                     filters=filters,
                     grid = analyse_params["grid"],
@@ -876,6 +876,7 @@ class Simulation:
             # simulate_and_analyse: users in memory, raw folder still known
             raw_folders_to_lock.add(raw_run_folder)
 
+        #Logic for "lsa" mode
         if combined:
             if not hasattr(self, "_load_params") or self._load_params is None:
                 raise RuntimeError(
@@ -892,6 +893,7 @@ class Simulation:
             analysis_folder = self._make_run_folder("analysis_data", analyse_params, grid_params)
         else:
             analysis_folder = self._make_run_folder("analysis_data", analyse_params)
+
         total     = len(self.users_list)
         milestone = max(1, total // 10)
 
