@@ -1,7 +1,0 @@
-run e resume in simulation vanno aggregati o comunque bisogna compattare il codice creando funzioni helpers condivise da entrambi (esempio eclatante è il caso ef<1)
-
-utils_cf è un copia e ricuci di codice, va sistematizzato e organizzato, DRY
-
-rimuovere la aggregategrid, è inutile e fuorviante
-
-la rimozione in simulation del last step per i t oltre il t_max è parziale e quindi sbagliata
