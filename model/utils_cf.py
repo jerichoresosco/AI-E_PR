@@ -469,8 +469,9 @@ def _build_ik_data(users_list, top_k, simulate_params,
             denom = np.sum(np.abs(sim_vals))
             if denom > 0:
                 scores[vi] = np.dot(sim_vals, rate_vals) / denom
-            else:
-                logger.warning(f"User {ui}, venue {vi}: zero denominator, score set to 0.")
+                #logger.info(f"User {ui}, venue {vi}: score={scores[vi]:.4f} (denom={denom:.4f})")
+            #else:
+                #logger.warning(f"User {ui}, venue {vi}: zero denominator, score set to 0.")
 
         positive_mask = scores > 0
         if not positive_mask.any():

@@ -914,6 +914,280 @@ def load_all_batch_stats(filters):
     logger.info(f"Loaded batch stats for {len(batch_stats_list)} batch(es) from: {param_folder}")
     return batch_stats_list
 
+def _build_combined_param_folder_name(filters, grid_params=None):
+    """
+    Build the parameter folder name used by _make_combined_run_folder().
+
+    Expected keys in filters: "ro", "gamma", "a_param", "b_param",
+    "t0" (time of base run), "t1" (time of resume run),
+    "starting_position" (optional), "epr_fraction_0" (optional),
+    "epr_fraction_1" (optional), "cf_type_0" (optional), "cf_type_1" (optional).
+
+    Mirrors the naming logic in Simulation._make_combined_run_folder().
+    """
+    ro      = filters["ro"]
+    gamma   = filters["gamma"]
+    a_param = filters["a_param"]
+    b_param = filters["b_param"]
+    t0      = filters["t0"]
+    t1      = filters["t1"]
+    sp      = filters.get("starting_position", "centered")
+    ef0     = float(filters.get("epr_fraction_0", 1.0))
+    ef1     = float(filters.get("epr_fraction_1", 1.0))
+    cf0     = filters.get("cf_type_0", None)
+    cf1     = filters.get("cf_type_1", None)
+
+    _sp_abbr = {"centered": "c", "random": "r", "normal": "n"}.get(sp, "c")
+    ef_part  = f"_ef0_{ef0}_ef1_{ef1}"
+
+    cf_part = ""
+    if ef0 < 1.0 and cf0 is not None:
+        cf_part += f"_cf0_{cf0}"
+    if ef1 < 1.0 and cf1 is not None:
+        cf_part += f"_cf1_{cf1}"
+
+    name = (
+        f"ro_{ro}_g_{gamma}"
+        f"_a_{a_param}_b_{b_param}"
+        f"_t0_{t0}_t1_{t1}"
+    )
+    if grid_params is not None:
+        name += f"_cl_{grid_params['cell_lenght']}_cn_{grid_params['cell_number']}"
+    elif "cell_lenght" in filters and "cell_number" in filters:
+        name += f"_cl_{filters['cell_lenght']}_cn_{filters['cell_number']}"
+    name += f"_sp_{_sp_abbr}{ef_part}{cf_part}"
+    return name
+
+
+def load_combined_analysis_parquet(filters=None, needed_files=None):
+    """
+    Load analysis data from combined_analysis_data/.
+
+    Mirrors load_analysis_parquet() but targets the two-level folder structure
+    produced by run_analysis(combined=True) / lsa mode.
+
+    Parameters
+    ----------
+    filters : dict, optional
+        Must contain: "ro", "gamma", "a_param", "b_param", "t0", "t1".
+        Optional: "starting_position", "epr_fraction_0", "epr_fraction_1",
+        "cf_type_0", "cf_type_1", "user_number", "grid",
+        "cell_lenght", "cell_number".
+    needed_files : set of str, optional
+        Subset of file-map keys to load.  When None, all files are loaded.
+
+    Returns
+    -------
+    list of dict
+        One dict per user with keys from the effective file_map.
+    """
+    logger.info("Loading analysis data (combined_analysis_data)...")
+
+    if filters is None:
+        filters = {}
+
+    user_number = filters.get("user_number", None)
+
+    project_root = os.path.dirname(os.path.dirname(
+        os.path.abspath(inspect.getfile(inspect.currentframe()))
+    ))
+    base_folder = os.path.join(project_root, "combined_analysis_data")
+
+    if not os.path.exists(base_folder):
+        logger.warning(f"combined_analysis_data folder not found: {base_folder}")
+        return []
+
+    param_folder_name = _build_combined_param_folder_name(filters)
+    param_folder = os.path.join(base_folder, param_folder_name)
+
+    if not os.path.exists(param_folder):
+        available = sorted(
+            d for d in os.listdir(base_folder)
+            if os.path.isdir(os.path.join(base_folder, d))
+        ) if os.path.exists(base_folder) else []
+        logger.warning(
+            f"Combined param folder not found: {param_folder_name}\n"
+            f"  Available folders in combined_analysis_data/:\n"
+            + "\n".join(f"    {d}" for d in available)
+        )
+        return []
+
+    full_file_map = {
+        "stats":         "_stats.parquet",
+        "rg_over_time":  "_rg_over_time.parquet",
+        "s_over_time":   "_s_over_time.parquet",
+        "venue_history": "_venue.parquet",
+        "user_history":  "_history.parquet",
+    }
+
+    if needed_files is not None:
+        file_map = {k: v for k, v in full_file_map.items() if k in needed_files}
+        if not file_map:
+            return []
+    else:
+        file_map = full_file_map
+
+    # Load directly from the batch subfolders inside param_folder
+    primary_suffix = next(iter(file_map.values()))
+    early_stop = user_number if (user_number is not None and user_number > 0) else None
+
+    loaded = []
+    done   = False
+    for batch_id in sorted(os.listdir(param_folder)):
+        if done:
+            break
+        run_path = os.path.join(param_folder, batch_id)
+        if not os.path.isdir(run_path):
+            continue
+
+        # Collect user indices from the primary file
+        user_indices = []
+        for fname in os.listdir(run_path):
+            if fname.endswith(primary_suffix) and fname.startswith("user_"):
+                token = fname[len("user_"):-len(primary_suffix)]
+                try:
+                    user_indices.append((int(token), token))
+                except ValueError:
+                    user_indices.append((0, token))
+        user_indices.sort(key=lambda x: x[0])
+
+        total_in_run = len(user_indices)
+        milestone    = max(1, total_in_run // 10)
+        for pos, (_, idx) in enumerate(user_indices):
+            if early_stop is not None and len(loaded) >= early_stop:
+                done = True
+                break
+            entry = {}
+            for key, suffix in file_map.items():
+                fpath = os.path.join(run_path, f"user_{idx}{suffix}")
+                entry[key] = pd.read_parquet(fpath) if os.path.exists(fpath) else None
+            if entry[next(iter(file_map))] is not None:
+                loaded.append(entry)
+            if (pos + 1) % milestone == 0 or (pos + 1) == total_in_run:
+                pct = ((pos + 1) / total_in_run) * 100
+                logger.info(
+                    f"Loading progress: {pct:.0f}% ({pos+1}/{total_in_run} users) [{batch_id}]"
+                )
+
+    loaded = _apply_user_number_slice(loaded, user_number)
+    logger.info(f"Combined analysis data loaded: {len(loaded)} users")
+    return loaded
+
+
+def load_combined_all_aggregate_grids(filters):
+    """
+    Load param-level and batch-level aggregate grids from combined_analysis_data/.
+
+    Mirrors load_all_aggregate_grids() for the combined folder structure.
+
+    Parameters
+    ----------
+    filters : dict
+        Same keys as load_combined_analysis_parquet().
+
+    Returns
+    -------
+    param_grid : np.ndarray or None
+    param_user_count : int
+    batch_grids : list of (str, np.ndarray, int)
+    """
+    project_root = os.path.dirname(os.path.dirname(
+        os.path.abspath(inspect.getfile(inspect.currentframe()))
+    ))
+    base_folder = os.path.join(project_root, "combined_analysis_data")
+
+    param_folder_name = _build_combined_param_folder_name(filters)
+    param_folder = os.path.join(base_folder, param_folder_name)
+
+    if not os.path.exists(param_folder):
+        logger.warning(f"Param folder not found for combined aggregate grids: {param_folder}")
+        return None, 0, []
+
+    param_agg_path = os.path.join(param_folder, "aggregate_grid.parquet")
+    param_grid = (
+        pd.read_parquet(param_agg_path).values.astype(int)
+        if os.path.exists(param_agg_path) else None
+    )
+
+    batch_grids = []
+    param_user_count = 0
+    for entry in sorted(os.listdir(param_folder)):
+        entry_path = os.path.join(param_folder, entry)
+        if not os.path.isdir(entry_path):
+            continue
+        agg_path = os.path.join(entry_path, "aggregate_grid.parquet")
+        if os.path.exists(agg_path):
+            mat = pd.read_parquet(agg_path).values.astype(int)
+            batch_user_count = sum(
+                1 for f in os.listdir(entry_path)
+                if f.startswith("user_") and f.endswith("_grid.parquet")
+            )
+            batch_grids.append((entry, mat, batch_user_count))
+            param_user_count += batch_user_count
+
+    logger.info(
+        f"Loaded combined aggregate grids: 1 param-level ({param_user_count} users), "
+        f"{len(batch_grids)} batch-level"
+    )
+    return param_grid, param_user_count, batch_grids
+
+
+def load_combined_all_batch_stats(filters):
+    """
+    Load batch_stats.parquet from combined_analysis_data/.
+
+    Mirrors load_all_batch_stats() for the combined folder structure.
+
+    Parameters
+    ----------
+    filters : dict
+        Same keys as load_combined_analysis_parquet().
+
+    Returns
+    -------
+    batch_stats_list : list of (str, pd.DataFrame)
+    """
+    project_root = os.path.dirname(os.path.dirname(
+        os.path.abspath(inspect.getfile(inspect.currentframe()))
+    ))
+    base_folder = os.path.join(project_root, "combined_analysis_data")
+
+    param_folder_name = _build_combined_param_folder_name(filters)
+    param_folder = os.path.join(base_folder, param_folder_name)
+
+    logger.info(f"load_combined_all_batch_stats looking for: {param_folder}")
+    if not os.path.exists(param_folder):
+        if os.path.exists(base_folder):
+            available = sorted(
+                d for d in os.listdir(base_folder)
+                if os.path.isdir(os.path.join(base_folder, d))
+            )
+            logger.warning(
+                f"Param folder not found for combined batch stats: {param_folder_name}\n"
+                f"  Available folders in combined_analysis_data/:\n"
+                + "\n".join(f"    {d}" for d in available)
+            )
+        else:
+            logger.warning(f"combined_analysis_data/ directory not found: {base_folder}")
+        return []
+
+    batch_stats_list = []
+    for entry in sorted(os.listdir(param_folder)):
+        entry_path = os.path.join(param_folder, entry)
+        if not os.path.isdir(entry_path):
+            continue
+        stats_path = os.path.join(entry_path, "batch_stats.parquet")
+        if os.path.exists(stats_path):
+            stats_df = pd.read_parquet(stats_path)
+            batch_stats_list.append((entry, stats_df))
+            logger.info(f"  Found combined batch stats: {entry}")
+        else:
+            logger.debug(f"  Skipping (no batch_stats.parquet): {entry}")
+
+    logger.info(f"Loaded combined batch stats for {len(batch_stats_list)} batch(es) from: {param_folder}")
+    return batch_stats_list
+
+
 def compute_moran_i(batch_agg):
     """
     Compute Moran's I spatial autocorrelation statistic on a batch aggregate

@@ -513,7 +513,7 @@ def plot_r_gyr_over_time_from_df(rg_over_time_list, filters=None, title=None, bi
 
     plt.figure(figsize=(8, 5))
     plt.scatter(sample_t_plot, avg_pct_plot, marker='o')
-    plt.xscale("log")
+    #plt.xscale("log")
     plt.xlabel("Clock")
     plt.ylabel(r"$r_g(t)\,/\,r_g^{last}$ [%]")
     plt.grid(True, which="both", ls="--", alpha=0.5)
