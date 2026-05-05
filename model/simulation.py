@@ -707,6 +707,10 @@ class Simulation:
             user_df  = pd.DataFrame(user.user_history[1:],  columns=user.user_history[0])
             venue_df = pd.DataFrame(user.venue_history[1:], columns=user.venue_history[0])
 
+            if user_df.empty:
+                logger.warning(f"User_{i} (uid={user.uid}): user_history is empty — saving empty Parquet. "
+                       f"This will cause errors on reconstruction. Consider increasing simulation time.")
+
             user_df.to_parquet( os.path.join(run_folder, f"user_{i}_history.parquet"), index=False)
             venue_df.to_parquet(os.path.join(run_folder, f"user_{i}_venue.parquet"),   index=False)
 
@@ -931,7 +935,7 @@ class Simulation:
             s_over_time_df.to_parquet(
                 os.path.join(analysis_folder, f"user_{i}_s_over_time.parquet"),  index=False)
 
-            if analyse_params.get("grid", False):
+            if analyse_params.get("grid", getattr(self, "grid_exists", False)):
                 if isinstance(user_entry, model.user.User) and user_entry.has_grid:
                     grid_df = pd.DataFrame(user_entry.grid.matrix)
                 elif isinstance(user_entry, dict) and user_entry.get("grid") is not None:
@@ -958,7 +962,8 @@ class Simulation:
             #collective_venue_counts is now inside the compute_collective_gini function, and its length is not returned.
         ])
 
-        if analyse_params.get("grid", False):
+        grid_active = analyse_params.get("grid", getattr(self, "grid_exists", False))
+        if grid_active:
             batch_grid, _ = model.utils.compute_and_save_aggregate_grid(analysis_folder)
             moran_i_dict  = model.utils.compute_moran_i(batch_grid)
             moran_df      = pd.DataFrame([{"metric": k, "value": v} for k, v in moran_i_dict.items()])
@@ -1042,6 +1047,8 @@ class Simulation:
             else:
                 logger.info("No grid plots requested — skipping aggregate grid load")
 
+        combined = plot_params.get("combined", False)
+
         filters = {**plot_params}
         if plot_params.get("grid") and grid_params:
             filters.update(grid_params)
@@ -1060,7 +1067,10 @@ class Simulation:
         # ------------------------------------------------------------------
         loaded = []
         if needs_user_data:
-            loaded = model.utils.load_analysis_parquet(filters=filters, needed_files=needed_files)
+            if combined:
+                loaded = model.utils.load_combined_analysis_parquet(filters=filters, needed_files=needed_files)
+            else:
+                loaded = model.utils.load_analysis_parquet(filters=filters, needed_files=needed_files)
 
         # Keep a copy of the full filters with the actual user count for titles/file names.
         # _plot_grid_params excludes user_number (irrelevant for grid/aggregate plots).
@@ -1098,8 +1108,12 @@ class Simulation:
         # Aggregate grid load (skipped when no grid plots are requested)
         # ------------------------------------------------------------------
         if needs_grids:
-            self.aggregate_grid, self.aggregate_grid_user_count, self.batch_grids = \
-                model.utils.load_all_aggregate_grids(filters)
+            if combined:
+                self.aggregate_grid, self.aggregate_grid_user_count, self.batch_grids = \
+                    model.utils.load_combined_all_aggregate_grids(filters)
+            else:
+                self.aggregate_grid, self.aggregate_grid_user_count, self.batch_grids = \
+                    model.utils.load_all_aggregate_grids(filters)
         else:
             self.aggregate_grid            = None
             self.aggregate_grid_user_count = 0
@@ -1109,7 +1123,10 @@ class Simulation:
         # Batch stats load (skipped when batch_stats is not in plot_list)
         # ------------------------------------------------------------------
         if needs_batch_stats:
-            self.batch_stats_list = model.utils.load_all_batch_stats(filters)
+            if combined:
+                self.batch_stats_list = model.utils.load_combined_all_batch_stats(filters)
+            else:
+                self.batch_stats_list = model.utils.load_all_batch_stats(filters)
         else:
             self.batch_stats_list = []
 
