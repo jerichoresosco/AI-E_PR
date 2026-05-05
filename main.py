@@ -26,6 +26,7 @@ def main():
                         #   "cp"   - load combined_analysis_data and plot (lsa output)
                         #   "ls"   - load a raw_data batch, continue simulation, save raw_data
                         #   "lsa"  load a raw_data batch, continue simulation, analyse and save
+                        #   "mp"   - multipleplot: overlay multiple combined datasets on shared axes
 
     # ----------------------------------------------------------
     # simulate_params -- used only in "simulate" and
@@ -160,9 +161,53 @@ def main():
         "combined": True,       # tells load_analysis_data() to use combined loaders
     }
 
+    # ----------------------------------------------------------
+    # multiple_plot_params -- used only in "mp" mode.
+    #
+    # Same structure as combined_plot_params, but:
+    #   - "label" (required): list of strings — one label per series.
+    #     The number of labels must equal the cartesian product of all
+    #     list/tuple values among the other keys.
+    #   - Any key whose value is a list or tuple is expanded: the cartesian
+    #     product of all such keys generates one parameter set per series.
+    #   - Scalar values are shared across all series.
+    #   - "combined": True must be set (mp works on combined_analysis_data).
+    #
+    # Example with 4 series (t1 x cf_type_1 = 2 x 2 = 4):
+    #
+    #   multiple_plot_params = {
+    #       "label":          ["long mf", "long ik", "short mf", "short ik"],
+    #       "ro": 0.1, "gamma": 0.2, "a_param": 0.75, "b_param": 0.6,
+    #       "t0": 30000,
+    #       "t1":             [230000, 10000],   # 2 values
+    #       "user_number": 1000, "grid": True, "starting_position": "random",
+    #       "epr_fraction_0": 1,
+    #       "epr_fraction_1": 0.2,
+    #       "cf_type_1":      ["mf", "ik"],       # 2 values → 2×2 = 4 combos
+    #       "combined": True,
+    #   }
+    # ----------------------------------------------------------
+    multiple_plot_params = {
+        "label":          ["EPR mf", "EPR ik"],
+        "ro": 0.1,
+        "gamma": 0.2,
+        "a_param": 0.75,
+        "b_param": 0.6,
+        "t0": 30000,
+        "t1": 230000,
+        "user_number": 1000,
+        "grid": True,
+        "starting_position": "random",
+        "epr_fraction_0": 1,
+        "epr_fraction_1": 1,
+        "cf_type_1":      ["mf", "ik"],
+        "combined": True,
+    }
+
     plot_list = [
         #"mobility",
         #"rg_distribution", #checked but still double plot
+        #"dist_distribution",
         #"freq_distribution", 
         #"two_radius", 
         #"s_over_time", 
@@ -223,6 +268,25 @@ def main():
         simulation.plot(plot_list, show=show)
 
     # ==========================================================
+    # MODE 4c: MULTIPLEPLOT -- overlay several combined datasets
+    #
+    # multiple_plot_params drives cartesian expansion of parameters
+    # (list values) into one labelled series each.  All series are
+    # plotted on shared axes for direct comparison.
+    #
+    # Only plots that make sense overlaid are supported:
+    #   "rg_distribution", "dist_distribution", "rg_over_time",
+    #   "s_over_time", "two_radius", "batch_stats" (printed per series)
+    # ==========================================================
+    elif mode == "mp":
+
+        simulation = model.simulation.Simulation()
+        simulation.load_multiple_plot_data(
+            multiple_plot_params, grid_params=grid_params, plot_list=plot_list
+        )
+        simulation.multipleplot(plot_list, show=show)
+
+    # ==========================================================
     # MODE 5: LOAD + SIMULATE (no analysis)
     #
     # Loads an existing raw_data batch, reconstructs User objects,
@@ -257,14 +321,15 @@ def main():
 
     else:
         raise ValueError(
-            "Invalid mode. Use short aliases: 's', 'a', 'sa', 'p', 'cp', 'ls', 'lsa'\n" 
+            "Invalid mode. Use short aliases: 's', 'a', 'sa', 'p', 'cp', 'ls', 'lsa', 'mp'\n" 
             "'s' = simulate only\n" 
             "'a' = analyse only\n" 
             "'sa' = simulate then analyse without reloading\n"
             "'p' = plot only\n"
             "'cp' = plot combined_analysis_data (lsa output)\n"
             "'ls' = load a raw_data batch, continue simulation, save raw_data\n"
-            "'lsa' = load a raw_data batch, continue simulation, analyse and save"
+            "'lsa' = load a raw_data batch, continue simulation, analyse and save\n"
+            "'mp' = multipleplot: overlay multiple combined datasets on shared axes"
         )
 
     elapsed = time.time() - start_time

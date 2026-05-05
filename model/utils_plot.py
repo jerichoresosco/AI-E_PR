@@ -678,6 +678,267 @@ def plot_aggregate_grid(grid_matrix, filters=None, title=None, batch_id=None, ma
     filepath_save_plot_or_show("plots", name=name, filters=filters, show=show)
 
 
+def plot_dist_distribution(mean_dist_list, filters=None, title=None, show=False):
+    """
+    Plot the distribution of per-user mean travel distances on a log-log scale.
+
+    Mirrors plot_rg_distribution: uses logarithmic binning via dotted_histogram.
+
+    Parameters
+    ----------
+    mean_dist_list : list or array-like
+        Per-user mean travel distances.
+    filters : dict, optional
+    title : str, optional
+    show : bool, optional
+    """
+    logger.info("Plotting mean travel distance distribution")
+
+    arr = np.array(mean_dist_list)
+    arr = arr[np.isfinite(arr) & (arr > 0)]
+    if len(arr) == 0:
+        logger.warning("plot_dist_distribution: no valid data — skipped.")
+        return
+
+    centers, density = dotted_histogram(arr)
+
+    plt.figure(figsize=(8, 6))
+    plt.loglog(centers, density, "o", markersize=5)
+    plt.xlabel("Mean travel distance")
+    plt.ylabel("Density")
+    if title:
+        plt.title(title, fontsize=7)
+    plt.grid(True, linestyle="--", alpha=0.4)
+    plt.tight_layout()
+    filepath_save_plot_or_show("plots", filters=filters, show=show)
+
+
+# ---------------------------------------------------------------------------
+# Multi-series overlay helpers  (used by multipleplot / "mp" mode)
+# ---------------------------------------------------------------------------
+
+_MP_COLORS = [
+    "#E73948", "#2196F3", "#4CAF50", "#FF9800", "#9C27B0",
+    "#00BCD4", "#FF5722", "#8BC34A", "#673AB7", "#009688",
+]
+
+def plot_rg_distribution_multi(series_list, filters=None, title=None, show=False):
+    """
+    Overlay rg distributions for multiple series.
+
+    Parameters
+    ----------
+    series_list : list of (label_str, rg_list)
+    """
+    logger.info("Plotting RG distribution (multi-series)")
+    fig, ax = plt.subplots(figsize=(8, 6))
+    for idx, (label, rg_list) in enumerate(series_list):
+        arr = np.array(rg_list)
+        arr = arr[np.isfinite(arr) & (arr > 0)]
+        if len(arr) == 0:
+            logger.warning(f"plot_rg_distribution_multi: no data for series '{label}'")
+            continue
+        centers, density = dotted_histogram(arr)
+        color = _MP_COLORS[idx % len(_MP_COLORS)]
+        ax.loglog(centers, density, "o", markersize=5, color=color, label=label)
+
+    ax.set_xlabel("Radius of gyration")
+    ax.set_ylabel("Density")
+    ax.grid(True, linestyle="--", alpha=0.4)
+    ax.legend()
+    if title:
+        ax.set_title(title, fontsize=7)
+    plt.tight_layout()
+    filepath_save_plot_or_show("plots", name="plot_rg_distribution_multi",
+                               filters=filters, show=show)
+
+
+def plot_dist_distribution_multi(series_list, filters=None, title=None, show=False):
+    """
+    Overlay mean-travel-distance distributions for multiple series.
+
+    Parameters
+    ----------
+    series_list : list of (label_str, mean_dist_list)
+    """
+    logger.info("Plotting mean travel distance distribution (multi-series)")
+    fig, ax = plt.subplots(figsize=(8, 6))
+    for idx, (label, md_list) in enumerate(series_list):
+        arr = np.array(md_list)
+        arr = arr[np.isfinite(arr) & (arr > 0)]
+        if len(arr) == 0:
+            logger.warning(f"plot_dist_distribution_multi: no data for series '{label}'")
+            continue
+        centers, density = dotted_histogram(arr)
+        color = _MP_COLORS[idx % len(_MP_COLORS)]
+        ax.loglog(centers, density, "o", markersize=5, color=color, label=label)
+
+    ax.set_xlabel("Mean travel distance")
+    ax.set_ylabel("Density")
+    ax.grid(True, linestyle="--", alpha=0.4)
+    ax.legend()
+    if title:
+        ax.set_title(title, fontsize=7)
+    plt.tight_layout()
+    filepath_save_plot_or_show("plots", name="plot_dist_distribution_multi",
+                               filters=filters, show=show)
+
+
+def plot_r_gyr_over_time_multi(series_list, filters=None, title=None,
+                                bins_per_decade=4, show=False):
+    """
+    Overlay normalised rg(t)/rg_final [%] curves for multiple series.
+
+    Parameters
+    ----------
+    series_list : list of (label_str, rg_over_time_list)
+        rg_over_time_list : list of pd.DataFrame with columns ['clock', 'rg']
+    """
+    logger.info("Plotting rg over time (multi-series)")
+    fig, ax = plt.subplots(figsize=(8, 5))
+
+    for idx, (label, rg_over_time_list) in enumerate(series_list):
+        if not rg_over_time_list:
+            logger.warning(f"plot_r_gyr_over_time_multi: no data for series '{label}'")
+            continue
+
+        all_clocks = np.concatenate([df["clock"].values for df in rg_over_time_list])
+        min_c, max_c = all_clocks.min(), all_clocks.max()
+        log_min = np.log10(min_c)
+        log_max = np.log10(max_c)
+        num_samples = max(2, int(round((log_max - log_min) * bins_per_decade)))
+        sample_times = np.logspace(log_min, log_max, num_samples)
+        sample_times[-1] = max_c
+
+        pct_by_time = {t: [] for t in sample_times}
+        for df in rg_over_time_list:
+            clocks = df["clock"].values
+            rg     = df["rg"].values
+            idx_start = np.where(rg > 0)[0]
+            if len(idx_start) == 0:
+                continue
+            t_start  = clocks[idx_start[0]]
+            final_rg = rg[-1]
+            if final_rg == 0:
+                continue
+            for t in sample_times:
+                if t < t_start:
+                    continue
+                mask = clocks <= t
+                i_last = int(np.where(mask)[0][-1])
+                pct_by_time[t].append(rg[i_last] / final_rg * 100.0)
+
+        sample_t_plot, avg_pct_plot = [], []
+        for t in sample_times:
+            vals = pct_by_time[t]
+            if vals:
+                sample_t_plot.append(t)
+                avg_pct_plot.append(np.mean(vals))
+
+        color = _MP_COLORS[idx % len(_MP_COLORS)]
+        ax.scatter(sample_t_plot, avg_pct_plot, marker='o', s=25,
+                   color=color, label=label)
+
+    ax.set_xlabel("Clock")
+    ax.set_ylabel(r"$r_g(t)\,/\,r_g^{last}$ [%]")
+    ax.grid(True, which="both", ls="--", alpha=0.5)
+    ax.legend()
+    if title:
+        ax.set_title(title, fontsize=7)
+    plt.tight_layout()
+    filepath_save_plot_or_show("plots", name="plot_rg_over_time_multi",
+                               filters=filters, show=show)
+
+
+def plot_S_over_time_multi(series_list, filters=None, title=None,
+                           bins_per_decade=4, show=False):
+    """
+    Overlay S(t) curves for multiple series.
+
+    Parameters
+    ----------
+    series_list : list of (label_str, s_over_time_list)
+        s_over_time_list : list of pd.DataFrame with columns ['clock', 's']
+    """
+    logger.info("Plotting S over time (multi-series)")
+    fig, ax = plt.subplots(figsize=(8, 5))
+
+    for idx, (label, s_over_time_list) in enumerate(series_list):
+        if not s_over_time_list:
+            logger.warning(f"plot_S_over_time_multi: no data for series '{label}'")
+            continue
+
+        all_clocks = np.concatenate([df["clock"].values for df in s_over_time_list])
+        min_c, max_c = all_clocks.min(), all_clocks.max()
+        log_min = np.log10(min_c)
+        log_max = np.log10(max_c)
+        num_samples = max(2, int(round((log_max - log_min) * bins_per_decade)))
+        sample_times = np.logspace(log_min, log_max, num_samples)
+        sample_times[-1] = max_c
+
+        pct_by_time = {t: [] for t in sample_times}
+        for df in s_over_time_list:
+            clocks = df["clock"].values
+            s      = df["s"].values
+            idx_s1 = np.where(s >= 1.0)[0]
+            if len(idx_s1) == 0:
+                continue
+            t_reach_1 = clocks[idx_s1[0]]
+            for t in sample_times:
+                if t < t_reach_1:
+                    continue
+                mask = clocks <= t
+                i_last = int(np.where(mask)[0][-1])
+                pct_by_time[t].append(s[i_last])
+
+        sample_t_plot, avg_pct_plot = [], []
+        for t in sample_times:
+            vals = pct_by_time[t]
+            if vals:
+                sample_t_plot.append(t)
+                avg_pct_plot.append(np.mean(vals))
+
+        color = _MP_COLORS[idx % len(_MP_COLORS)]
+        ax.scatter(sample_t_plot, avg_pct_plot, marker='o', s=25,
+                   color=color, label=label)
+
+    ax.set_xlabel("Clock")
+    ax.set_ylabel("S(t)")
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.grid(True, which="both", ls="--", alpha=0.5)
+    ax.legend()
+    if title:
+        ax.set_title(title, fontsize=7)
+    plt.tight_layout()
+    filepath_save_plot_or_show("plots", name="plot_S_over_time_multi",
+                               filters=filters, show=show)
+
+
+def plot_two_radius_multi(series_list, filters=None, title=None, show=False):
+    """
+    Overlay 2-rg vs rg scatter for multiple series.
+
+    Parameters
+    ----------
+    series_list : list of (label_str, rg_list, two_rg_list)
+    """
+    logger.info("Plotting two-radius vs radius (multi-series)")
+    fig, ax = plt.subplots(figsize=(8, 6))
+    for idx, (label, rg_list, two_rg_list) in enumerate(series_list):
+        color = _MP_COLORS[idx % len(_MP_COLORS)]
+        ax.scatter(rg_list, two_rg_list, s=5, color=color, label=label, alpha=0.7)
+
+    ax.set_xlabel("Radius of Gyration")
+    ax.set_ylabel("2-Radius of Gyration")
+    ax.legend()
+    if title:
+        ax.set_title(title, fontsize=7)
+    plt.tight_layout()
+    filepath_save_plot_or_show("plots", name="plot_two_radius_multi",
+                               filters=filters, show=show)
+
+
 def plot_cf_neighbor_similarity_distribution(cf_neighbors, check_run_dir, interval_idx, top_n_ranks=3):
     """
     Plot the similarity-score distribution for the top-N ranks across all users,
