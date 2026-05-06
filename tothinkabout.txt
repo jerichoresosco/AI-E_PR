@@ -6,3 +6,5 @@ Il differente ruolo di top_k nel caso di uk contro ik/mf è problematico?
 Il primo identifica k utenti negli altri due casi identifica k venues.
 Dunque confrontare a parità di k simulazioni con cf diversi forse 
 può perdere di significato.
+
+Quando si esegue una simulazione con grid, utenti diversi visitano la stessa venue in coordinate differenti (entrio i bordi della grid)

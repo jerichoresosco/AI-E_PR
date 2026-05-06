@@ -1408,40 +1408,45 @@ class Simulation:
                 logger.warning(f"multipleplot: '{pl}' is not supported in mp mode — skipped.")
 
         if "rg_distribution" in plot_list:
-            model.utils_plot.plot_rg_distribution_multi(
-                [(s["label"], s["rg_list"]) for s in self._mp_series],
+            model.utils_plot.plot_rg_distribution(
+                rg_list=None,
+                series_list=[(s["label"], s["rg_list"]) for s in self._mp_series],
                 filters=first_p,
                 title=model.utils_plot.build_plot_title("RG Distribution (multi)", first_p),
                 show=show,
             )
 
         if "dist_distribution" in plot_list:
-            model.utils_plot.plot_dist_distribution_multi(
-                [(s["label"], s["mean_dist_list"]) for s in self._mp_series],
+            model.utils_plot.plot_dist_distribution(
+                mean_dist_list=None,
+                series_list=[(s["label"], s["mean_dist_list"]) for s in self._mp_series],
                 filters=first_p,
                 title=model.utils_plot.build_plot_title("Mean Travel Distance Distribution (multi)", first_p),
                 show=show,
             )
 
         if "rg_over_time" in plot_list:
-            model.utils_plot.plot_r_gyr_over_time_multi(
-                [(s["label"], s["all_rg_over_time"]) for s in self._mp_series],
+            model.utils_plot.plot_r_gyr_over_time_from_df(
+                rg_over_time_list=None,
+                series_list=[(s["label"], s["all_rg_over_time"]) for s in self._mp_series],
                 filters=first_p, bins_per_decade=10,
                 title=model.utils_plot.build_plot_title("RG over time (multi)", first_p),
                 show=show,
             )
 
         if "s_over_time" in plot_list:
-            model.utils_plot.plot_S_over_time_multi(
-                [(s["label"], s["all_s_over_time"]) for s in self._mp_series],
+            model.utils_plot.plot_S_over_time_from_df(
+                s_over_time_list=None,
+                series_list=[(s["label"], s["all_s_over_time"]) for s in self._mp_series],
                 filters=first_p, bins_per_decade=10,
                 title=model.utils_plot.build_plot_title("S over time (multi)", first_p),
                 show=show,
             )
 
         if "two_radius" in plot_list:
-            model.utils_plot.plot_two_radius_multi(
-                [(s["label"], s["rg_list"], s["two_rg_list"]) for s in self._mp_series],
+            model.utils_plot.plot_two_radius_vs_radius(
+                rg_list=None, two_rg_list=None,
+                series_list=[(s["label"], s["rg_list"], s["two_rg_list"]) for s in self._mp_series],
                 filters=first_p,
                 title=model.utils_plot.build_plot_title("Two-RG vs RG (multi)", first_p),
                 show=show,
