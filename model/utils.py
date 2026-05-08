@@ -7,7 +7,7 @@ import inspect
 import scipy.stats
 from libpysal.weights import lat2W
 from esda.moran import Moran
-
+import time
 import logging
 logger = logging.getLogger(__name__)
 
@@ -128,7 +128,7 @@ def polar_to_cartesian (delta_r, angle, position=(0,0)):
     return (x + position[0], y + position[1])
 
 
-def compute_stats(user_history_df):
+def compute_stats(user_history_df, venue_history_df):
     """
     Compute trajectory statistics from a user_history DataFrame.
 
@@ -137,12 +137,17 @@ def compute_stats(user_history_df):
       - x/y centre of mass (top-2 most visited venues only)
       - radius of gyration (full)
       - radius of gyration (top-2 venues)
+      - s_rand  : random entropy      log2(N)   [bits]
+      - s_unc   : uncorrelated entropy           [bits]
+      - s_real  : real entropy (Lempel-Ziv)      [nats]
 
     Parameters
     ----------
     user_history_df : pd.DataFrame
         User history with columns 'Destination', 'Destination_x_coord',
         'Destination_y_coord'.
+    venue_history_df : pd.DataFrame
+        Venue visit counts with 'Number of visits' column.
 
     Returns
     -------
@@ -157,6 +162,9 @@ def compute_stats(user_history_df):
             {"metric": "y_center of mass two",   "value": float("nan")},
             {"metric": "radius of gyration",     "value": float("nan")},
             {"metric": "radius of gyration two", "value": float("nan")},
+            {"metric": "s_rand",                 "value": float("nan")},
+            {"metric": "s_unc",                  "value": float("nan")},
+            {"metric": "s_real",                 "value": float("nan")},
         ])
 
     x_traj = np.concatenate((user_history_df["Departure_x_coord"].values[0:1], user_history_df["Destination_x_coord"].values))
@@ -165,7 +173,6 @@ def compute_stats(user_history_df):
     x_cm = np.mean(x_traj)
     y_cm = np.mean(y_traj)
     r_gyr = np.sqrt(np.mean((x_traj - x_cm)**2 + (y_traj - y_cm)**2))
-    
 
     # Top-2 most visited destinations
     top2 = user_history_df["Destination"].value_counts().head(2).index.tolist()
@@ -180,6 +187,11 @@ def compute_stats(user_history_df):
     else:
         x_cm_two, y_cm_two, r_gyr_two = x_cm, y_cm, 0.0
 
+    # --- entropy measures ---
+    s_rand = compute_random_entropy(venue_history_df)
+    s_unc  = compute_uncorrelated_entropy(venue_history_df)
+    s_real = compute_real_entropy(user_history_df)
+
     return pd.DataFrame([
         {"metric": "x_center of mass",      "value": x_cm},
         {"metric": "y_center of mass",       "value": y_cm},
@@ -187,6 +199,9 @@ def compute_stats(user_history_df):
         {"metric": "y_center of mass two",   "value": y_cm_two},
         {"metric": "radius of gyration",     "value": r_gyr},
         {"metric": "radius of gyration two", "value": r_gyr_two},
+        {"metric": "s_rand",                 "value": s_rand},
+        {"metric": "s_unc",                  "value": s_unc},
+        {"metric": "s_real",                 "value": s_real},
     ])
 
 
@@ -358,6 +373,141 @@ def compute_collective_gini(venue_history_df_list):
 
     visit_counts = list(collective_venue_counts.values())
     return compute_gini_coefficient(visit_counts)
+
+
+def compute_random_entropy(venue_history_df):
+    """
+    Compute the random entropy S^rand = log2(N), where N is the number of
+    distinct venues visited by the user.
+
+    This is the maximum-entropy case: all N locations equally probable.
+
+    Parameters
+    ----------
+    venue_history_df : pd.DataFrame
+        Venue history with at least a 'Venue_name' column.
+
+    Returns
+    -------
+    float
+        S^rand in bits. Returns 0.0 for degenerate cases (N <= 1).
+    """
+    N = len(venue_history_df)
+    if N <= 1:
+        return 0.0
+    return float(np.log2(N))
+
+def compute_uncorrelated_entropy(venue_history_df):
+    """
+    Compute the temporal-uncorrelated entropy
+        S^unc = -sum_j  p_j * log2(p_j)
+    where p_j is the fraction of total simulation time spent at venue j.
+
+    Unlike the frequentist version (based on visit counts), this weights each
+    venue by the actual time spent there, making the probability estimate
+    more accurate for heterogeneous dwell times.
+
+    Parameters
+    ----------
+    venue_history_df : pd.DataFrame
+        Venue history with a 'Total time' column (cumulative dwell time per venue).
+
+    Returns
+    -------
+    float
+        S^unc in bits. Returns 0.0 for degenerate cases.
+    """
+    times = venue_history_df["Total time"].values.astype(float)
+    times = times[times > 0]
+    total = times.sum()
+    if total == 0 or len(times) <= 1:
+        return 0.0
+    probs = times / total
+    return float(-np.sum(probs * np.log2(probs)))
+
+def compute_uncorrelated_entropy_frequentist(venue_history_df):
+    """
+    Compute the temporal-uncorrelated entropy
+        S^unc = -sum_j  p_j * log2(p_j)
+    where p_j is the empirical visit frequency of venue j.
+
+    Captures spatial heterogeneity but ignores the temporal order of visits.
+
+    Parameters
+    ----------
+    venue_history_df : pd.DataFrame
+        Venue history with a 'Number of visits' column.
+
+    Returns
+    -------
+    float
+        S^unc in bits. Returns 0.0 for degenerate cases.
+    """
+    counts = venue_history_df["Number of visits"].values.astype(float)
+    counts = counts[counts > 0]
+    total = counts.sum()
+    if total == 0 or len(counts) <= 1:
+        return 0.0
+    probs = counts / total
+    return float(-np.sum(probs * np.log2(probs)))
+
+
+def compute_real_entropy(user_history_df):
+    """
+    Estimate the real (actual) entropy S via the Lempel-Ziv compression estimator
+    (Kontoyiannis et al., 1998):
+
+        S^est = (1/n * sum_i Lambda_i)^{-1} * ln(n)
+
+    where Lambda_i is the length of the shortest substring starting at position i
+    that has not appeared in the preceding positions 1..i-1.
+
+    This estimator converges to the true entropy rate of a stationary process and
+    captures the full spatiotemporal structure (order and timing) of the trajectory.
+
+    Parameters
+    ----------
+    user_history_df : pd.DataFrame
+        User history with a 'Destination' column giving the sequence of visited
+        venue names (one row per movement step).
+
+    Returns
+    -------
+    float
+        S^est in natural logarithm.
+        Returns 0.0 for trajectories that are too short (< 2 steps).
+
+    Notes
+    -----
+    Complexity O(n^2)
+    """
+    sequence = user_history_df["Destination"].values
+    n = len(sequence)
+    if n < 2:
+        return 0.0
+
+    lambdas = []
+    for i in range(1, n):
+        length = 1
+        # Search for the shortest new substring starting at i
+        while i + length <= n:
+            candidate = tuple(sequence[i: i + length])
+            found = False
+            # Scan all starting positions strictly before i
+            for start in range(i - length + 1):
+                if start + length <= i:
+                    if tuple(sequence[start: start + length]) == candidate:
+                        found = True
+                        break
+            if not found:
+                break
+            length += 1
+        lambdas.append(length)
+
+    mean_lambda = float(np.mean(lambdas))
+    if mean_lambda == 0:
+        return 0.0
+    return float((1.0 / mean_lambda) * np.log(n))  # natural log, as in the paper
 
 
 def load_parquet_folder(base_folder, filters, file_map, grid=False, return_run_folders=False, starting_position="centered", user_number=None):

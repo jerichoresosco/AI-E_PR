@@ -722,6 +722,138 @@ def plot_aggregate_grid(grid_matrix, filters=None, title=None, batch_id=None, ma
     filepath_save_plot_or_show("plots", name=name, filters=filters, show=show)
 
 
+def plot_entropy_distribution(entropy_list, entropy_type="srand", filters=None, title=None,
+                              show=False, series_list=None):
+    """
+    Plot the distribution of one entropy measure across users.
+
+    Works in both single-series mode (plot / "p") and multi-series mode
+    (multipleplot / "mp"), following exactly the same pattern as
+    plot_rg_distribution().
+
+    Parameters
+    ----------
+    entropy_list : list or array-like
+        Per-user entropy values.  Ignored when series_list is provided.
+    entropy_type : str
+        One of "srand", "sunc", "sreal".  Controls the axis label and log-
+        scaling choice (S^rand and S^unc are in bits → log scale; S^real is in
+        nats and can include very small values, so a linear x-axis is used).
+    filters : dict, optional
+    title : str, optional
+    show : bool, optional
+    series_list : list of (str, list), optional
+        Multi-series override: [(label, entropy_list), ...].
+    """
+    _LABELS = {
+        "srand": (r"$S^{rand}$ (bits)",  r"$P(S^{rand})$"),
+        "sunc":  (r"$S^{unc}$ (bits)",   r"$P(S^{unc})$"),
+        "sreal": (r"$S^{real}$ (nats)",  r"$P(S^{real})$"),
+    }
+    xlabel, ylabel = _LABELS.get(entropy_type, ("Entropy", "Density"))
+    log_x = entropy_type in ("srand", "sunc")
+
+    logger.info(f"Plotting entropy distribution ({entropy_type})")
+
+    if series_list is None:
+        series_list = _single_as_series(entropy_list)
+    multi = len(series_list) > 1
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    for idx, (label, data) in enumerate(series_list):
+        arr = np.array(data, dtype=float)
+        arr = arr[np.isfinite(arr)]
+        if len(arr) == 0:
+            logger.warning(f"plot_entropy_distribution({entropy_type}): no valid data for '{label}'")
+            continue
+
+        kw = {"color": _MP_COLORS[idx % len(_MP_COLORS)]} if multi else {}
+
+        if log_x:
+            arr_pos = arr[arr > 0]
+            if len(arr_pos) == 0:
+                continue
+            centers, density = dotted_histogram(arr_pos)
+            ax.loglog(centers, density, "o", markersize=5,
+                      label=label if multi else None, **kw)
+        else:
+            # S^real can be near zero — use a linear histogram
+            counts, edges = np.histogram(arr, bins=40, density=True)
+            centers = 0.5 * (edges[:-1] + edges[1:])
+            mask = counts > 0
+            ax.semilogy(centers[mask], counts[mask], "o", markersize=5,
+                        label=label if multi else None, **kw)
+
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.grid(True, linestyle="--", alpha=0.4)
+    if multi:
+        ax.legend()
+    if title:
+        ax.set_title(title, fontsize=7)
+    plt.tight_layout()
+    filepath_save_plot_or_show("plots", filters=filters, show=show)
+
+
+def plot_entropy_triple(s_rand_list, s_unc_list, s_real_list,
+                        filters=None, title=None, show=False):
+    """
+    Plot the distributions of S^rand, S^unc, and S^real on three vertically
+    stacked subplots, using the same single dataset.  This is the "s_triple"
+    plot: only supported in single-dataset mode ("p"), not in "mp".
+
+    S^rand and S^unc are shown on log-log axes (bits); S^real on a semi-log
+    y axis (nats) to accommodate values near zero.
+
+    Parameters
+    ----------
+    s_rand_list : list of float
+    s_unc_list  : list of float
+    s_real_list : list of float
+    filters : dict, optional
+    title : str, optional
+    show : bool, optional
+    """
+    logger.info("Plotting entropy triple (s_rand, s_unc, s_real)")
+
+    fig, axes = plt.subplots(3, 1, figsize=(8, 12))
+    fig.subplots_adjust(hspace=0.45)
+
+    specs = [
+        (s_rand_list, r"$S^{rand}$ (bits)",  r"$P(S^{rand})$",  True),
+        (s_unc_list,  r"$S^{unc}$ (bits)",   r"$P(S^{unc})$",   True),
+        (s_real_list, r"$S^{real}$ (nats)",  r"$P(S^{real})$",  False),
+    ]
+
+    for ax, (data, xlabel, ylabel, log_x) in zip(axes, specs):
+        arr = np.array(data, dtype=float)
+        arr = arr[np.isfinite(arr)]
+        if len(arr) == 0:
+            ax.set_visible(False)
+            continue
+
+        if log_x:
+            arr_pos = arr[arr > 0]
+            if len(arr_pos):
+                centers, density = dotted_histogram(arr_pos)
+                ax.loglog(centers, density, "o", markersize=5, color="#E73948")
+        else:
+            counts, edges = np.histogram(arr, bins=40, density=True)
+            centers = 0.5 * (edges[:-1] + edges[1:])
+            mask = counts > 0
+            ax.semilogy(centers[mask], counts[mask], "o", markersize=5, color="#2196F3")
+
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel(ylabel)
+        ax.grid(True, linestyle="--", alpha=0.4)
+
+    if title:
+        fig.suptitle(title, fontsize=7, y=0.98)
+
+    plt.tight_layout(rect=[0, 0, 1, 0.97])
+    filepath_save_plot_or_show("plots", filters=filters, show=show)
+
+
 def plot_cf_neighbor_similarity_distribution(cf_neighbors, check_run_dir, interval_idx, top_n_ranks=3):
     """
     Plot the similarity-score distribution for the top-N ranks across all users,

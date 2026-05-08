@@ -151,7 +151,7 @@ class User:
         _first_venue_name = self._position_to_cell_name(_start) if self.has_grid else "Venue_1"
 
         self.user_history = [["State(E/R)", "Departure","Departure_x_coord", "Departure_y_coord", "Destination","Destination_x_coord", "Destination_y_coord", "Distance", "Angle", "Delta_t", "Clock"]] 
-        self.venue_history = [["Venue_name", "Number of visits", "Venue_x_coord", "Venue_y_coord"], [_first_venue_name, 1, _start[0], _start[1]]]
+        self.venue_history = [["Venue_name", "Number of visits", "Venue_x_coord", "Venue_y_coord", "Total time"], [_first_venue_name, 1, _start[0], _start[1], 0.0]]
         self.num_distinct_venues = 1 ##lo sostituirò con num di elementi colonna history?
         self.simulation = simulation 
         self.state = None
@@ -363,8 +363,13 @@ class User:
 
         """
          
+        # Update total time spent at the departure venue
+        departure_idx = self._venue_index[self.departure]
+        time_col = self.venue_history[0].index("Total time")
+        self.venue_history[departure_idx][time_col] += self.delta_t
+
         if self.state == "E":
-            self.venue_history.append([self.destination, 1, *self.next_position])
+            self.venue_history.append([self.destination, 1, *self.next_position, 0.0])
             self.user_history.append([self.state, self.departure, *self.previous_position,
                                     self.destination, *self.position, self.delta_r, self.angle, self.delta_t, self.clock])
         
@@ -372,3 +377,4 @@ class User:
             self.venue_history[self._row_index][self.venue_history[0].index("Number of visits")] += 1
             self.user_history.append([self.state, self.departure, *self.previous_position,
                                     self.destination, *self.position, self.delta_r, self.angle, self.delta_t, self.clock])
+
