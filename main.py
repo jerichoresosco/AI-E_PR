@@ -18,7 +18,7 @@ def main():
     # Choose mode
     # ==========================================================
 
-    mode = "lsa"  # Options (short aliases):
+    mode = "mp"  # Options (short aliases):
                         #   "s"     run simulation, save raw_data only
                         #   "a"    - load raw_data, compute & save analysis_data
                         #   "sa"   - simulate then analyse without reloading from disk
@@ -80,7 +80,7 @@ def main():
         "gamma": 0.2,
         "a_param": 0.75,
         "b_param": 0.6,
-        "time": 100000,
+        "time": 230000,
         "user_number": 1000,       #For correct displaying
         "grid": True,
         "starting_position": "random",
@@ -188,7 +188,7 @@ def main():
     #   }
     # ----------------------------------------------------------
     multiple_plot_params = {
-        "label":          [ "EPR mf"],# "EPR ik", "EPR uk", "EPR EPR", "EPR EPR","EPR EPR"],
+        "label":          [ "EPR mf", "EPR ik", "EPR uk", "EPR EPR", "EPR EPR","EPR EPR"],
         "ro": 0.1,
         "gamma": 0.2,
         "a_param": 0.75,
@@ -199,26 +199,26 @@ def main():
         "grid": True,
         "starting_position": "random",
         "epr_fraction_0": 1,
-        "epr_fraction_1": [0.01],# 1],
-        "cf_type_1":      ["mf"],# "ik", "uk"],
+        "epr_fraction_1": [0.01, 1],
+        "cf_type_1":      ["mf", "ik", "uk"],
         "combined": True,
     }
 
     plot_list = [
         #"mobility",
-        #"rg_distribution", #checked but still double plot   #mp
-        #"dist_distribution", #mp
-        #"freq_distribution", #mp
-        #"two_radius", #mp
-        #"s_over_time", #mp
-        #"rg_over_time", #mp
+        "rg_distribution", #checked but still double plot   #mp
+        "dist_distribution", #mp
+        "freq_distribution", #mp
+        "two_radius", #mp
+        "s_over_time", #mp
+        "rg_over_time", #mp
         #"aggregate_grid",   
         #"batch_grid",  ##Problems in saving due to max lenght titole 260 characters
-        #"batch_stats",
+        #"batch_stats", #mp
         "srand", #mp     
         "sunc", #mp      
         "sreal", #mp     
-        "s_triple",   
+        #"s_triple",   
     ]
 
     show = True #if True only shows the plots, if False only saves them to disk

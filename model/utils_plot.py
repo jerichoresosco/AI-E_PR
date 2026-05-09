@@ -255,7 +255,7 @@ def plot_rg_distribution(rg_list, filters=None, title=None, show=False, series_l
         if len(arr) == 0:
             logger.warning(f"plot_rg_distribution: no valid data for series '{label}'")
             continue
-        centers, density = dotted_histogram(arr)
+        centers, density = dotted_histogram(arr, bins_per_decade=8)
         kw = {"color": _MP_COLORS[idx % len(_MP_COLORS)]} if multi else {}
         ax.loglog(centers, density, "o", markersize=5, label=label if multi else None, **kw)
 
@@ -300,7 +300,7 @@ def plot_dist_distribution(mean_dist_list, filters=None, title=None, show=False,
         if len(arr) == 0:
             logger.warning(f"plot_dist_distribution: no valid data for series '{label}'")
             continue
-        centers, density = dotted_histogram(arr)
+        centers, density = dotted_histogram(arr, bins_per_decade=8)
         kw = {"color": _MP_COLORS[idx % len(_MP_COLORS)]} if multi else {}
         ax.loglog(centers, density, "o", markersize=5, label=label if multi else None, **kw)
 
@@ -556,6 +556,7 @@ def plot_r_gyr_over_time_from_df(rg_over_time_list, filters=None, title=None, bi
                    label=label if multi else None, **kw)
 
     ax.set_xlabel("Clock")
+    ax.set_xscale("log")
     ax.set_yscale("log")
     ax.set_ylabel(r"$r_g(t)\,/\,r_g^{last}$ [%]")
     ax.grid(True, which="both", ls="--", alpha=0.5)
@@ -736,9 +737,7 @@ def plot_entropy_distribution(entropy_list, entropy_type="srand", filters=None, 
     entropy_list : list or array-like
         Per-user entropy values.  Ignored when series_list is provided.
     entropy_type : str
-        One of "srand", "sunc", "sreal".  Controls the axis label and log-
-        scaling choice (S^rand and S^unc are in bits → log scale; S^real is in
-        nats and can include very small values, so a linear x-axis is used).
+        One of "srand", "sunc", "sreal".  Controls the axis label.
     filters : dict, optional
     title : str, optional
     show : bool, optional
@@ -746,12 +745,11 @@ def plot_entropy_distribution(entropy_list, entropy_type="srand", filters=None, 
         Multi-series override: [(label, entropy_list), ...].
     """
     _LABELS = {
-        "srand": (r"$S^{rand}$ (bits)",  r"$P(S^{rand})$"),
-        "sunc":  (r"$S^{unc}$ (bits)",   r"$P(S^{unc})$"),
-        "sreal": (r"$S^{real}$ (nats)",  r"$P(S^{real})$"),
+        "srand": (r"$S^{rand}$", "Probability Density"),
+        "sunc":  (r"$S^{unc}$",  "Probability Density"),
+        "sreal": (r"$S^{real}$", "Probability Density"),
     }
-    xlabel, ylabel = _LABELS.get(entropy_type, ("Entropy", "Density"))
-    log_x = entropy_type in ("srand", "sunc")
+    xlabel, ylabel = _LABELS.get(entropy_type, ("Entropy", "Probability Density"))
 
     logger.info(f"Plotting entropy distribution ({entropy_type})")
 
@@ -759,7 +757,7 @@ def plot_entropy_distribution(entropy_list, entropy_type="srand", filters=None, 
         series_list = _single_as_series(entropy_list)
     multi = len(series_list) > 1
 
-    fig, ax = plt.subplots(figsize=(8, 6))
+    fig, ax = plt.subplots(figsize=(8, 5))
     for idx, (label, data) in enumerate(series_list):
         arr = np.array(data, dtype=float)
         arr = arr[np.isfinite(arr)]
@@ -767,22 +765,12 @@ def plot_entropy_distribution(entropy_list, entropy_type="srand", filters=None, 
             logger.warning(f"plot_entropy_distribution({entropy_type}): no valid data for '{label}'")
             continue
 
-        kw = {"color": _MP_COLORS[idx % len(_MP_COLORS)]} if multi else {}
+        color = _MP_COLORS[idx % len(_MP_COLORS)] if multi else "#E73948"
 
-        if log_x:
-            arr_pos = arr[arr > 0]
-            if len(arr_pos) == 0:
-                continue
-            centers, density = dotted_histogram(arr_pos)
-            ax.loglog(centers, density, "o", markersize=5,
-                      label=label if multi else None, **kw)
-        else:
-            # S^real can be near zero — use a linear histogram
-            counts, edges = np.histogram(arr, bins=40, density=True)
-            centers = 0.5 * (edges[:-1] + edges[1:])
-            mask = counts > 0
-            ax.semilogy(centers[mask], counts[mask], "o", markersize=5,
-                        label=label if multi else None, **kw)
+        counts, edges = np.histogram(arr, bins=40, density=True)
+        centers = 0.5 * (edges[:-1] + edges[1:])
+        ax.plot(centers, counts, "o", markersize=5, color=color,
+                label=label if multi else None)
 
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
@@ -795,57 +783,35 @@ def plot_entropy_distribution(entropy_list, entropy_type="srand", filters=None, 
     filepath_save_plot_or_show("plots", filters=filters, show=show)
 
 
-def plot_entropy_triple(s_rand_list, s_unc_list, s_real_list,
-                        filters=None, title=None, show=False):
+def plot_entropy_triple(s_rand_list, s_unc_list, s_real_list, filters=None, title=None, show=False):
     """
-    Plot the distributions of S^rand, S^unc, and S^real on three vertically
-    stacked subplots, using the same single dataset.  This is the "s_triple"
-    plot: only supported in single-dataset mode ("p"), not in "mp".
-
-    S^rand and S^unc are shown on log-log axes (bits); S^real on a semi-log
-    y axis (nats) to accommodate values near zero.
-
-    Parameters
-    ----------
-    s_rand_list : list of float
-    s_unc_list  : list of float
-    s_real_list : list of float
-    filters : dict, optional
-    title : str, optional
-    show : bool, optional
+    Plot the distributions of S^rand, S^unc, and S^real on a single graph,
+    all on linear scale.
     """
     logger.info("Plotting entropy triple (s_rand, s_unc, s_real)")
 
-    fig, axes = plt.subplots(3, 1, figsize=(8, 12))
-    fig.subplots_adjust(hspace=0.45)
+    fig, ax = plt.subplots(1, 1, figsize=(8, 5))
 
     specs = [
-        (s_rand_list, r"$S^{rand}$ (bits)",  r"$P(S^{rand})$",  True),
-        (s_unc_list,  r"$S^{unc}$ (bits)",   r"$P(S^{unc})$",   True),
-        (s_real_list, r"$S^{real}$ (nats)",  r"$P(S^{real})$",  False),
+        (s_rand_list, r"$S^{rand}$", "r"),
+        (s_unc_list,  r"$S^{unc}$",  "k"),
+        (s_real_list, r"$S^{real}$", "b"),
     ]
 
-    for ax, (data, xlabel, ylabel, log_x) in zip(axes, specs):
+    for data, label, color in specs:
         arr = np.array(data, dtype=float)
         arr = arr[np.isfinite(arr)]
         if len(arr) == 0:
-            ax.set_visible(False)
             continue
 
-        if log_x:
-            arr_pos = arr[arr > 0]
-            if len(arr_pos):
-                centers, density = dotted_histogram(arr_pos)
-                ax.loglog(centers, density, "o", markersize=5, color="#E73948")
-        else:
-            counts, edges = np.histogram(arr, bins=40, density=True)
-            centers = 0.5 * (edges[:-1] + edges[1:])
-            mask = counts > 0
-            ax.semilogy(centers[mask], counts[mask], "o", markersize=5, color="#2196F3")
+        counts, edges = np.histogram(arr, bins=40, density=True)
+        centers = 0.5 * (edges[:-1] + edges[1:])
+        ax.plot(centers, counts, "o", markersize=5, color=color, label=label)
 
-        ax.set_xlabel(xlabel)
-        ax.set_ylabel(ylabel)
-        ax.grid(True, linestyle="--", alpha=0.4)
+    ax.set_xlabel("Entropy")
+    ax.set_ylabel("Probability Density")
+    ax.grid(True, linestyle="--", alpha=0.4)
+    ax.legend()
 
     if title:
         fig.suptitle(title, fontsize=7, y=0.98)
