@@ -56,6 +56,18 @@ class Simulation:
         self.venue_history_list = []
         self.all_rg_over_time = []
         self.all_s_over_time = []
+        self.mean_dist_list = []
+
+        # Entropy lists -- populated during load_analysis_data()
+        self.s_rand_list = []
+        self.s_unc_list  = []
+        self.s_real_list = []
+
+        # Multi-series data for multipleplot ("mp") mode
+        # Each element is a dict: {"label": str, "rg_list": [...], "two_rg_list": [...],
+        #   "mean_dist_list": [...], "rg_distribution": [...], "all_rg_over_time": [...],
+        #   "all_s_over_time": [...]}
+        self._mp_series = []
 
         # Single-user references for mobility / freq_distribution plots
         self.last_user_history = None
@@ -574,7 +586,6 @@ class Simulation:
             "Destination", "Destination_x_coord", "Destination_y_coord",
             "Distance", "Angle", "Delta_t", "Clock",
         ]
-        venue_header = ["Venue_name", "Number of visits", "Venue_x_coord", "Venue_y_coord"]
 
         for pos, i in enumerate(user_indices):
             h_path = os.path.join(run_folder, f"user_{i}_history.parquet")
@@ -586,10 +597,10 @@ class Simulation:
 
             # Rebuild history as list-of-lists (matching the live format)
             user_history  = [history_header] + history_df.values.tolist()
-            venue_history = [venue_header]
-            if venue_df is not None:
-                venue_history += venue_df.values.tolist()
 
+            venue_header  = list(venue_df.columns)
+            venue_history = [venue_header] + venue_df.values.tolist()
+            
             # Last row of history -> current state
             last = user_history[-1]
             col  = {name: idx for idx, name in enumerate(history_header)}
@@ -920,9 +931,23 @@ class Simulation:
             user_history_df_list.append(user_history_df)
             venue_history_df_list.append(venue_history_df)
 
-            stats_df        = model.utils.compute_stats(user_history_df)
+            stats_df        = model.utils.compute_stats(user_history_df, venue_history_df)
             rg_over_time_df = model.utils.compute_rg_over_time(user_history_df)
             s_over_time_df  = model.utils.compute_s_over_time(user_history_df)
+
+            # -- mean travel distance (avg of Distance column, excluding NaN/0) --
+            dist_col = user_history_df["Distance"].dropna()
+            dist_col = dist_col[dist_col > 0]
+            mean_dist = float(dist_col.mean()) if len(dist_col) > 0 else 0.0
+
+            # -- number of distinct venues visited --
+            num_venues = int(len(venue_history_df))
+
+            extra_rows = pd.DataFrame([
+                {"metric": "mean_travel_distance", "value": mean_dist},
+                {"metric": "num_venues",            "value": float(num_venues)},
+            ])
+            stats_df = pd.concat([stats_df, extra_rows], ignore_index=True)
 
             user_history_df.to_parquet(
                 os.path.join(analysis_folder, f"user_{i}_history.parquet"),      index=False)
@@ -954,12 +979,40 @@ class Simulation:
         gini_ind  = model.utils.compute_individual_gini(venue_history_df_list)
         gini_coll = model.utils.compute_collective_gini(venue_history_df_list)
 
+        # ------------------------------------------------------------------
+        # Aggregate per-user stats for batch summary 
+        # ------------------------------------------------------------------
+        _all_rg      = []
+        _all_2rg     = []
+        _all_md      = []
+        _all_nv      = []
+        _all_s_rand  = []
+        _all_s_unc   = []
+        _all_s_real  = []
+        for i in range(total):
+            _sf = pd.read_parquet(os.path.join(analysis_folder, f"user_{i}_stats.parquet"))
+            def _get(metric):
+                row = _sf.loc[_sf["metric"] == metric, "value"]
+                return float(row.iloc[0]) if len(row) else float("nan")
+            _all_rg.append(     _get("radius of gyration"))
+            _all_2rg.append(    _get("radius of gyration two"))
+            _all_md.append(     _get("mean_travel_distance"))
+            _all_nv.append(     _get("num_venues"))
+            _all_s_rand.append( _get("s_rand"))
+            _all_s_unc.append(  _get("s_unc"))
+            _all_s_real.append( _get("s_real"))
+
         batch_stats_df = pd.DataFrame([
-            {"metric": "gini_collective",     "value": gini_coll},
-            {"metric": "gini_individual",     "value": gini_ind},
-            {"metric": "n_users",             "value": float(total)},
-            #{"metric": "n_venues_collective", "value": float(len(collective_venue_counts))},
-            #collective_venue_counts is now inside the compute_collective_gini function, and its length is not returned.
+            {"metric": "gini_collective",          "value": gini_coll},
+            {"metric": "gini_individual",          "value": gini_ind},
+            {"metric": "n_users",                  "value": float(total)},
+            {"metric": "mean_rg",                  "value": float(np.nanmean(_all_rg))},
+            {"metric": "mean_2rg",                 "value": float(np.nanmean(_all_2rg))},
+            {"metric": "mean_travel_distance",     "value": float(np.nanmean(_all_md))},
+            {"metric": "mean_num_venues",          "value": float(np.nanmean(_all_nv))},
+            {"metric": "mean_s_rand",              "value": float(np.nanmean(_all_s_rand))},
+            {"metric": "mean_s_unc",               "value": float(np.nanmean(_all_s_unc))},
+            {"metric": "mean_s_real",              "value": float(np.nanmean(_all_s_real))},
         ])
 
         grid_active = analyse_params.get("grid", getattr(self, "grid_exists", False))
@@ -1011,15 +1064,20 @@ class Simulation:
         # Determine which per-user files and which aggregate data are needed
         # ------------------------------------------------------------------
         _PLOT_FILE_NEEDS = {
-            "mobility":          {"user_history", "venue_history", "stats"},
-            "rg_distribution":   {"stats"},
-            "freq_distribution": {"venue_history"},
-            "two_radius":        {"stats"},
-            "s_over_time":       {"s_over_time"},
-            "rg_over_time":      {"rg_over_time"},
-            "aggregate_grid":    set(),   # only aggregate parquet, no per-user data
-            "batch_grid":        set(),
-            "batch_stats":       set(),   # only batch_stats.parquet, no per-user data
+            "mobility":           {"user_history", "venue_history", "stats"},
+            "rg_distribution":    {"stats"},
+            "dist_distribution":  {"user_history"},
+            "freq_distribution":  {"venue_history"},
+            "two_radius":         {"stats"},
+            "s_over_time":        {"s_over_time"},
+            "rg_over_time":       {"rg_over_time"},
+            "aggregate_grid":     set(),
+            "batch_grid":         set(),
+            "batch_stats":        set(),
+            "srand":              {"stats"},
+            "sunc":               {"stats"},
+            "sreal":              {"stats"},
+            "s_triple":           {"stats"},
         }
 
         if plot_list is not None:
@@ -1061,6 +1119,10 @@ class Simulation:
         self.venue_history_list = []
         self.all_rg_over_time = []
         self.all_s_over_time = []
+        self.mean_dist_list = []
+        self.s_rand_list = []
+        self.s_unc_list  = []
+        self.s_real_list = []
 
         # ------------------------------------------------------------------
         # Per-user data load (skipped when only grid plots are requested)
@@ -1089,12 +1151,26 @@ class Simulation:
             self.last_stats         = stats_df
 
             if stats_df is not None:
-                self.rg_list.append(
-                    stats_df.loc[stats_df['metric'] == "radius of gyration",     'value'].iloc[0])
-                self.two_rg_list.append(
-                    stats_df.loc[stats_df['metric'] == "radius of gyration two", 'value'].iloc[0])
-                self.last_x_cm = stats_df.loc[stats_df['metric'] == "x_center of mass", 'value'].iloc[0]
-                self.last_y_cm = stats_df.loc[stats_df['metric'] == "y_center of mass", 'value'].iloc[0]
+                def _sget(m):
+                    row = stats_df.loc[stats_df['metric'] == m, 'value']
+                    return float(row.iloc[0]) if len(row) else float("nan")
+
+                self.rg_list.append(    _sget("radius of gyration"))
+                self.two_rg_list.append(_sget("radius of gyration two"))
+                self.last_x_cm = _sget("x_center of mass")
+                self.last_y_cm = _sget("y_center of mass")
+                md = _sget("mean_travel_distance")
+                if not np.isnan(md):
+                    pass  # mean_travel_distance retained in stats for other uses
+
+            # -- collect all individual delta_r values for dist_distribution --
+            if user_history_df is not None:
+                dist_col = user_history_df["Distance"].dropna()
+                dist_col = dist_col[dist_col > 0]
+                self.mean_dist_list.extend(dist_col.tolist())
+                self.s_rand_list.append(_sget("s_rand"))
+                self.s_unc_list.append( _sget("s_unc"))
+                self.s_real_list.append(_sget("s_real"))
 
             if venue_history_df is not None:
                 self.venue_history_list.append(venue_history_df)
@@ -1159,6 +1235,12 @@ class Simulation:
                 filters=p, title=model.utils_plot.build_plot_title("RG Distribution", p),
                 show=self._show
             )
+        if "dist_distribution" in plot_list:
+            model.utils_plot.plot_dist_distribution(
+                self.mean_dist_list,
+                filters=p, title=model.utils_plot.build_plot_title("Travel Distance Distribution", p),
+                show=self._show
+            )
         if "freq_distribution" in plot_list:
             model.utils_plot.plot_frequency_distribution(
                 self.venue_history_list, self.gamma,
@@ -1216,6 +1298,249 @@ class Simulation:
                 )
             else:
                 logger.warning("No batch stats available to print.")
+
+        if "srand" in plot_list:
+            model.utils_plot.plot_entropy_distribution(
+                self.s_rand_list, entropy_type="srand",
+                filters=p, title=model.utils_plot.build_plot_title("S^rand Distribution", p),
+                show=self._show,
+            )
+        if "sunc" in plot_list:
+            model.utils_plot.plot_entropy_distribution(
+                self.s_unc_list, entropy_type="sunc",
+                filters=p, title=model.utils_plot.build_plot_title("S^unc Distribution", p),
+                show=self._show,
+            )
+        if "sreal" in plot_list:
+            model.utils_plot.plot_entropy_distribution(
+                self.s_real_list, entropy_type="sreal",
+                filters=p, title=model.utils_plot.build_plot_title("S^real Distribution", p),
+                show=self._show,
+            )
+        if "s_triple" in plot_list:
+            model.utils_plot.plot_entropy_triple(
+                self.s_rand_list, self.s_unc_list, self.s_real_list,
+                filters=p, title=model.utils_plot.build_plot_title("Entropy Distributions", p),
+                show=self._show,
+            )
+
+    # ==========================================================================
+    # MULTIPLEPLOT  ("mp" mode)
+    # ==========================================================================
+
+    @staticmethod
+    def _expand_multiple_plot_params(mp_params):
+        """
+        Expand a multiple_plot_params dict that may contain list/tuple values
+        into a list of plain dicts (one per combination) and a matching list
+        of label strings.
+
+        Rules
+        -----
+        * The key ``"label"`` must be a list/tuple of strings — one per
+          expected combination.  It is popped before building combinations.
+        * The key ``"combined"`` is scalar and is copied verbatim to every
+          expansion.
+        * Every other key whose value is a list/tuple participates in the
+          cartesian product.  Scalar values are shared across all combinations.
+        * The number of label strings must equal the number of combinations
+          produced by the cartesian product; a ValueError is raised otherwise.
+
+        Returns
+        -------
+        list of (label_str, params_dict)
+        """
+        import itertools
+
+        params = dict(mp_params)
+        labels = params.pop("label")
+        if isinstance(labels, str):
+            labels = [labels]
+
+        # Separate list/scalar values (skip "combined" — always scalar)
+        list_keys   = [k for k, v in params.items()
+                       if isinstance(v, (list, tuple)) and k != "combined"]
+        scalar_keys = [k for k in params if k not in list_keys]
+
+        if not list_keys:
+            # No expansion needed — single combination
+            return [(labels[0] if labels else "", params)]
+
+        # Build cartesian product of all list values
+        value_combinations = list(itertools.product(*[params[k] for k in list_keys]))
+        scalar_part = {k: params[k] for k in scalar_keys}
+
+        if len(labels) != len(value_combinations):
+            raise ValueError(
+                f"multiple_plot_params: 'label' has {len(labels)} entries but "
+                f"the cartesian product of list values yields "
+                f"{len(value_combinations)} combinations.\n"
+                f"List keys: {list_keys}"
+            )
+
+        result = []
+        for label, combo in zip(labels, value_combinations):
+            combo_dict = {**scalar_part, **dict(zip(list_keys, combo))}
+            result.append((label, combo_dict))
+        return result
+
+    def load_multiple_plot_data(self, mp_params, grid_params=None, plot_list=None):
+        """
+        Load one analysis dataset per combination encoded in *mp_params* and
+        store each as a named series in self._mp_series for use by
+        multipleplot().
+
+        Parameters
+        ----------
+        mp_params : dict
+            Like combined_plot_params but with:
+            - ``"label"``  : list of strings, one per series
+            - List/tuple values on any other key trigger cartesian expansion.
+            - ``"combined": True`` must be present (mp works on combined data).
+        grid_params : dict, optional
+        plot_list : list of str, optional
+        """
+        self._mp_series = []
+        expansions = self._expand_multiple_plot_params(mp_params)
+        logger.info(f"multipleplot: loading {len(expansions)} series")
+
+        for label, p_dict in expansions:
+            logger.info(f"  loading series '{label}' with params: {p_dict}")
+            # Reuse the standard load machinery by calling load_analysis_data
+            # on a throw-away Simulation object so we don't clobber self's data.
+            tmp = Simulation()
+            tmp.load_analysis_data(p_dict, grid_params=grid_params, plot_list=plot_list)
+
+            series = {
+                "label":            label,
+                "rg_list":          list(tmp.rg_list),
+                "two_rg_list":      list(tmp.two_rg_list),
+                "mean_dist_list":   list(tmp.mean_dist_list),
+                "all_rg_over_time": list(tmp.all_rg_over_time),
+                "all_s_over_time":  list(tmp.all_s_over_time),
+                "batch_stats_list": list(tmp.batch_stats_list),
+                "_plot_params":     dict(tmp._plot_params),
+                "s_rand_list":      list(tmp.s_rand_list),
+                "s_unc_list":       list(tmp.s_unc_list),
+                "s_real_list":      list(tmp.s_real_list),
+            }
+            self._mp_series.append(series)
+            logger.info(
+                f"  series '{label}': {len(series['rg_list'])} users, "
+                f"{len(series['all_rg_over_time'])} rg_over_time records"
+            )
+
+    def multipleplot(self, plot_list, show=False):
+        """
+        Generate multi-series overlay plots for every entry in plot_list that
+        supports it.
+
+        Supported plots (overlaid on shared axes):
+            "rg_distribution"   — log-log density of rg values
+            "dist_distribution" — log-log density of mean travel distances
+            "rg_over_time"      — normalised rg(t) / rg_final [%]
+            "s_over_time"       — S(t) over time
+            "two_radius"        — 2-rg vs rg scatter
+            "freq_distribution" — rank-frequency (requires gamma; shared across series)
+
+        Unsupported plots (spatial / single-user):
+            "mobility", "aggregate_grid", "batch_grid"
+            → silently skipped with a warning.
+
+        "batch_stats" is printed once per series (each series gets its own table).
+        """
+        if not self._mp_series:
+            logger.warning("multipleplot() called but _mp_series is empty. "
+                           "Call load_multiple_plot_data() first.")
+            return
+
+        # Build a combined-filters dict from the first series for titles/saving
+        first_p = self._mp_series[0]["_plot_params"]
+
+        _UNSUPPORTED = {"mobility", "aggregate_grid", "batch_grid"}
+        for pl in plot_list:
+            if pl in _UNSUPPORTED:
+                logger.warning(f"multipleplot: '{pl}' is not supported in mp mode — skipped.")
+
+        if "rg_distribution" in plot_list:
+            model.utils_plot.plot_rg_distribution(
+                rg_list=None,
+                series_list=[(s["label"], s["rg_list"]) for s in self._mp_series],
+                filters=first_p,
+                title=model.utils_plot.build_plot_title("RG Distribution (multi)", first_p),
+                show=show,
+            )
+
+        if "dist_distribution" in plot_list:
+            model.utils_plot.plot_dist_distribution(
+                mean_dist_list=None,
+                series_list=[(s["label"], s["mean_dist_list"]) for s in self._mp_series],
+                filters=first_p,
+                title=model.utils_plot.build_plot_title("Travel Distance Distribution (multi)", first_p),
+                show=show,
+            )
+
+        if "rg_over_time" in plot_list:
+            model.utils_plot.plot_r_gyr_over_time_from_df(
+                rg_over_time_list=None,
+                series_list=[(s["label"], s["all_rg_over_time"]) for s in self._mp_series],
+                filters=first_p, bins_per_decade=10,
+                title=model.utils_plot.build_plot_title("RG over time (multi)", first_p),
+                show=show,
+            )
+
+        if "s_over_time" in plot_list:
+            model.utils_plot.plot_S_over_time_from_df(
+                s_over_time_list=None,
+                series_list=[(s["label"], s["all_s_over_time"]) for s in self._mp_series],
+                filters=first_p, bins_per_decade=10,
+                title=model.utils_plot.build_plot_title("S over time (multi)", first_p),
+                show=show,
+            )
+
+        if "two_radius" in plot_list:
+            model.utils_plot.plot_two_radius_vs_radius(
+                rg_list=None, two_rg_list=None,
+                series_list=[(s["label"], s["rg_list"], s["two_rg_list"]) for s in self._mp_series],
+                filters=first_p,
+                title=model.utils_plot.build_plot_title("Two-RG vs RG (multi)", first_p),
+                show=show,
+            )
+
+        if "batch_stats" in plot_list:
+            for s in self._mp_series:
+                if s["batch_stats_list"]:
+                    model.utils_plot.print_batch_stats(
+                        s["batch_stats_list"],
+                        filters=s["_plot_params"],
+                        title=model.utils_plot.build_plot_title(
+                            f"Batch Stats [{s['label']}]", s["_plot_params"]),
+                    )
+
+        if "srand" in plot_list:
+            model.utils_plot.plot_entropy_distribution(
+                entropy_list=None, entropy_type="srand",
+                series_list=[(s["label"], s["s_rand_list"]) for s in self._mp_series],
+                filters=first_p,
+                title=model.utils_plot.build_plot_title("S^rand Distribution (multi)", first_p),
+                show=show,
+            )
+        if "sunc" in plot_list:
+            model.utils_plot.plot_entropy_distribution(
+                entropy_list=None, entropy_type="sunc",
+                series_list=[(s["label"], s["s_unc_list"]) for s in self._mp_series],
+                filters=first_p,
+                title=model.utils_plot.build_plot_title("S^unc Distribution (multi)", first_p),
+                show=show,
+            )
+        if "sreal" in plot_list:
+            model.utils_plot.plot_entropy_distribution(
+                entropy_list=None, entropy_type="sreal",
+                series_list=[(s["label"], s["s_real_list"]) for s in self._mp_series],
+                filters=first_p,
+                title=model.utils_plot.build_plot_title("S^real Distribution (multi)", first_p),
+                show=show,
+            )
 
     # ==========================================================================
     # UTILITY

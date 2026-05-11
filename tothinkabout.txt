@@ -6,3 +6,12 @@ Il differente ruolo di top_k nel caso di uk contro ik/mf è problematico?
 Il primo identifica k utenti negli altri due casi identifica k venues.
 Dunque confrontare a parità di k simulazioni con cf diversi forse 
 può perdere di significato.
+
+Quando si esegue una simulazione con grid, utenti diversi visitano la stessa venue in coordinate differenti (entrio i bordi della grid)
+
+Nel momento in cui scrivo queste righe sto implementando il calcolo di home_location. Cosa devo usare per sceglierla? Un approccio frequentista o temporale?
+Lo stesso dicasi per Suncorr
+
+La densità di simulazione con grid deve essere maggiore o minore di 1. Tanti utenti e poche celle (compatibilmente con tempo di simulazione) o viceversa?
+
+Le simulazioni con loader devono comprendere i dati di partenza oppure no?
