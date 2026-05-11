@@ -255,7 +255,7 @@ def plot_rg_distribution(rg_list, filters=None, title=None, show=False, series_l
         if len(arr) == 0:
             logger.warning(f"plot_rg_distribution: no valid data for series '{label}'")
             continue
-        centers, density = dotted_histogram(arr, bins_per_decade=8)
+        centers, density = dotted_histogram(arr, bins_per_decade=16)
         kw = {"color": _MP_COLORS[idx % len(_MP_COLORS)]} if multi else {}
         ax.loglog(centers, density, "o", markersize=5, label=label if multi else None, **kw)
 
@@ -272,22 +272,28 @@ def plot_rg_distribution(rg_list, filters=None, title=None, show=False, series_l
 
 def plot_dist_distribution(mean_dist_list, filters=None, title=None, show=False, series_list=None):
     """
-    Plot the distribution of per-user mean travel distances on a log-log scale.
+    Plot the distribution of individual travel distances (delta_r) on a log-log scale.
 
-    In single-series mode (series_list=None) behaves as a standalone plot.
-    In multi-series mode pass series_list as [(label, mean_dist_list), ...];
-    mean_dist_list is then ignored.
+    Each data point represents a single exploration jump, not a per-user mean.
+    All delta_r values from all users in a batch are pooled together and binned
+    into a log-log histogram, giving the empirical distribution of jump sizes.
+
+    In single-series mode (series_list=None) ``mean_dist_list`` must be a flat
+    array-like of raw delta_r values (one entry per exploration step across all users).
+    In multi-series mode pass series_list as [(label, delta_r_flat_list), ...];
+    ``mean_dist_list`` is then ignored.
 
     Parameters
     ----------
     mean_dist_list : list or array-like
-        Per-user mean travel distances (used only when series_list is None).
+        Flat list of individual delta_r values for all exploration steps (used only
+        when series_list is None).
     filters : dict, optional
     title : str, optional
     show : bool, optional
     series_list : list of (str, list), optional
     """
-    logger.info("Plotting mean travel distance distribution")
+    logger.info("Plotting travel distance distribution (all delta_r values)")
 
     if series_list is None:
         series_list = _single_as_series(mean_dist_list)
@@ -295,7 +301,7 @@ def plot_dist_distribution(mean_dist_list, filters=None, title=None, show=False,
 
     fig, ax = plt.subplots(figsize=(8, 6))
     for idx, (label, data) in enumerate(series_list):
-        arr = np.array(data)
+        arr = np.array(data, dtype=float)
         arr = arr[np.isfinite(arr) & (arr > 0)]
         if len(arr) == 0:
             logger.warning(f"plot_dist_distribution: no valid data for series '{label}'")
@@ -304,7 +310,7 @@ def plot_dist_distribution(mean_dist_list, filters=None, title=None, show=False,
         kw = {"color": _MP_COLORS[idx % len(_MP_COLORS)]} if multi else {}
         ax.loglog(centers, density, "o", markersize=5, label=label if multi else None, **kw)
 
-    ax.set_xlabel("Mean travel distance")
+    ax.set_xlabel(r"Travel distance $\Delta r$")
     ax.set_ylabel("Density")
     ax.grid(True, linestyle="--", alpha=0.4)
     if multi:
@@ -767,7 +773,7 @@ def plot_entropy_distribution(entropy_list, entropy_type="srand", filters=None, 
 
         color = _MP_COLORS[idx % len(_MP_COLORS)] if multi else "#E73948"
 
-        counts, edges = np.histogram(arr, bins=40, density=True)
+        counts, edges = np.histogram(arr, bins=30, density=True)
         centers = 0.5 * (edges[:-1] + edges[1:])
         ax.plot(centers, counts, "o", markersize=5, color=color,
                 label=label if multi else None)
@@ -804,7 +810,7 @@ def plot_entropy_triple(s_rand_list, s_unc_list, s_real_list, filters=None, titl
         if len(arr) == 0:
             continue
 
-        counts, edges = np.histogram(arr, bins=40, density=True)
+        counts, edges = np.histogram(arr, bins=30, density=True)
         centers = 0.5 * (edges[:-1] + edges[1:])
         ax.plot(centers, counts, "o", markersize=5, color=color, label=label)
 

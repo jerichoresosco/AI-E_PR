@@ -166,7 +166,9 @@ def _set_user_exploration_state(user, chosen):
     user.next_position = (chosen[2], chosen[3])
     user.destination   = chosen[0]
     user._venue_index[user.destination] = len(user.venue_history)
-    user.delta_r = None
+    dx = chosen[2] - user.position[0]
+    dy = chosen[3] - user.position[1]
+    user.delta_r = float(np.sqrt(dx * dx + dy * dy))
     user.angle   = None
 
 

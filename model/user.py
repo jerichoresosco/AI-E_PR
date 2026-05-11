@@ -267,8 +267,13 @@ class User:
             self.state = "R"
             self.next_position = self.get_return_position()
             self.destination = self.next_venue_return
-            self.delta_r = None
-            self.angle = None    
+            
+            dx = self.next_position[0] - self.position[0]
+            dy = self.next_position[1] - self.position[1]
+            distance = np.sqrt(dx**2 + dy**2)
+
+            self.delta_r = distance
+            self.angle = None
 
     def get_return_position(self):
         """

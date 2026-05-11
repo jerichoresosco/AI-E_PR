@@ -39,7 +39,7 @@ def main():
         "b_param": 0.6,
         "user_number": 1000,
         "time": 30000,
-        "grid" : True,
+        "grid" : False,
         "starting_position": "random",   # "centered" | "random" | "normal"
         "epr_fraction": 1,      # fraction of 'time' run with pure EPR before CF (1.0 = pure EPR; 0 < x < 1 enables CF phase)
         "cf_type": "ik",          # CF algorithm: "uk" = User-KNN, "ik" = Item-KNN, "mf" = Matrix Factorization
@@ -80,9 +80,9 @@ def main():
         "gamma": 0.2,
         "a_param": 0.75,
         "b_param": 0.6,
-        "time": 230000,
+        "time": 30000,
         "user_number": 1000,       #For correct displaying
-        "grid": True,
+        "grid": False,
         "starting_position": "random",
         "epr_fraction": 1,
         #"cf_type": "mf",         # must match the simulate_params value used
@@ -214,11 +214,11 @@ def main():
         "rg_over_time", #mp
         #"aggregate_grid",   
         #"batch_grid",  ##Problems in saving due to max lenght titole 260 characters
-        #"batch_stats", #mp
+        "batch_stats", #mp
         "srand", #mp     
         "sunc", #mp      
         "sreal", #mp     
-        #"s_triple",   
+        "s_triple",   
     ]
 
     show = True #if True only shows the plots, if False only saves them to disk

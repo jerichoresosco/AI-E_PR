@@ -1066,7 +1066,7 @@ class Simulation:
         _PLOT_FILE_NEEDS = {
             "mobility":           {"user_history", "venue_history", "stats"},
             "rg_distribution":    {"stats"},
-            "dist_distribution":  {"stats"},
+            "dist_distribution":  {"user_history"},
             "freq_distribution":  {"venue_history"},
             "two_radius":         {"stats"},
             "s_over_time":        {"s_over_time"},
@@ -1161,7 +1161,13 @@ class Simulation:
                 self.last_y_cm = _sget("y_center of mass")
                 md = _sget("mean_travel_distance")
                 if not np.isnan(md):
-                    self.mean_dist_list.append(md)
+                    pass  # mean_travel_distance retained in stats for other uses
+
+            # -- collect all individual delta_r values for dist_distribution --
+            if user_history_df is not None:
+                dist_col = user_history_df["Distance"].dropna()
+                dist_col = dist_col[dist_col > 0]
+                self.mean_dist_list.extend(dist_col.tolist())
                 self.s_rand_list.append(_sget("s_rand"))
                 self.s_unc_list.append( _sget("s_unc"))
                 self.s_real_list.append(_sget("s_real"))
@@ -1232,7 +1238,7 @@ class Simulation:
         if "dist_distribution" in plot_list:
             model.utils_plot.plot_dist_distribution(
                 self.mean_dist_list,
-                filters=p, title=model.utils_plot.build_plot_title("Mean Travel Distance Distribution", p),
+                filters=p, title=model.utils_plot.build_plot_title("Travel Distance Distribution", p),
                 show=self._show
             )
         if "freq_distribution" in plot_list:
@@ -1470,7 +1476,7 @@ class Simulation:
                 mean_dist_list=None,
                 series_list=[(s["label"], s["mean_dist_list"]) for s in self._mp_series],
                 filters=first_p,
-                title=model.utils_plot.build_plot_title("Mean Travel Distance Distribution (multi)", first_p),
+                title=model.utils_plot.build_plot_title("Travel Distance Distribution (multi)", first_p),
                 show=show,
             )
 
