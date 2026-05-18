@@ -18,7 +18,7 @@ def main():
     # Choose mode
     # ==========================================================
 
-    mode = "mp"  # Options (short aliases):
+    mode = "p"  # Options (short aliases):
                         #   "s"     run simulation, save raw_data only
                         #   "a"    - load raw_data, compute & save analysis_data
                         #   "sa"   - simulate then analyse without reloading from disk
@@ -37,9 +37,9 @@ def main():
         "gamma": 0.2,
         "a_param": 0.75,
         "b_param": 0.6,
-        "user_number": 1000,
-        "time": 30000,
-        "grid" : False,
+        "user_number": 5,
+        "time": 1000000,
+        "grid" : True,
         "starting_position": "random",   # "centered" | "random" | "normal"
         "epr_fraction": 1,      # fraction of 'time' run with pure EPR before CF (1.0 = pure EPR; 0 < x < 1 enables CF phase)
         "cf_type": "ik",          # CF algorithm: "uk" = User-KNN, "ik" = Item-KNN, "mf" = Matrix Factorization
@@ -80,9 +80,9 @@ def main():
         "gamma": 0.2,
         "a_param": 0.75,
         "b_param": 0.6,
-        "time": 30000,
-        "user_number": 1000,       #For correct displaying
-        "grid": False,
+        "time": 1000000,
+        "user_number": 5,       #For correct displaying
+        "grid": True,
         "starting_position": "random",
         "epr_fraction": 1,
         #"cf_type": "mf",         # must match the simulate_params value used
@@ -205,7 +205,7 @@ def main():
     }
 
     plot_list = [
-        #"mobility",
+        "mobility",
         "rg_distribution", #checked but still double plot   #mp
         "dist_distribution", #mp
         "freq_distribution", #mp
