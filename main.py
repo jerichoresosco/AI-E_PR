@@ -18,7 +18,7 @@ def main():
     # Choose mode
     # ==========================================================
 
-    mode = "p"  # Options (short aliases):
+    mode = "cp"  # Options (short aliases):
                         #   "s"     run simulation, save raw_data only
                         #   "a"    - load raw_data, compute & save analysis_data
                         #   "sa"   - simulate then analyse without reloading from disk
@@ -38,15 +38,16 @@ def main():
         "a_param": 0.75,
         "b_param": 0.6,
         "user_number": 5,
-        "time": 1000000,
-        "grid" : True,
+        "time": 10000,
         "starting_position": "random",   # "centered" | "random" | "normal"
-        "epr_fraction": 1,      # fraction of 'time' run with pure EPR before CF (1.0 = pure EPR; 0 < x < 1 enables CF phase)
-        "cf_type": "ik",          # CF algorithm: "uk" = User-KNN, "ik" = Item-KNN, "mf" = Matrix Factorization
-        "top_k": 10,              # number of similar neighbors used in CF phase
+        "algorithm": "ge",               # "ce" = classic EPR (no grid)
+                                         # "ge" = grid EPR
+                                         # "uk" = User-KNN CF
+                                         # "ik" = Item-KNN CF
+                                         # "mf" = Matrix Factorization CF
+        "top_k": 10,                     # neighbors used in CF algorithms (uk/ik/mf)
     }
 
-    ##TOPK STILL NOT IN THE SAVING/PLOT PROCEDURE!!!!!1
     ##LATENT FACTOR = 20 HARDCODED
 
     grid_params = {
@@ -66,8 +67,8 @@ def main():
         "a_param": 0.75,
         "b_param": 0.6,
         "time": 30000,
-        "grid": True,
         "starting_position": "random",   # must match the simulate_params value used
+        "algorithm": "ge",               # must match the simulate_params value used
     }
 
     # ----------------------------------------------------------
@@ -80,12 +81,11 @@ def main():
         "gamma": 0.2,
         "a_param": 0.75,
         "b_param": 0.6,
-        "time": 1000000,
+        "time": 10000,
         "user_number": 5,       #For correct displaying
-        "grid": True,
         "starting_position": "random",
-        "epr_fraction": 1,
-        #"cf_type": "mf",         # must match the simulate_params value used
+        "algorithm": "ge",               # must match the simulate_params value used
+        #"algorithm": "mf",              # uncomment to target a CF run
     }
 
     # ----------------------------------------------------------
@@ -105,11 +105,9 @@ def main():
         "gamma": 0.2,
         "a_param": 0.75,
         "b_param": 0.6,
-        "time": 30000,            # time of the ORIGINAL simulation to load
-        "grid": True,
+        "time": 10000,            # time of the ORIGINAL simulation to load
         "starting_position": "random",
-        "epr_fraction": 1,      # include only if the original run used CF
-        "cf_type": "ik",          # must match the cf_type of the original run
+        "algorithm": "ge",               # must match the original run's algorithm
         # "batch_id": "20240601_153012_004321",  # omit to use the most recent batch
     }
 
@@ -128,12 +126,9 @@ def main():
         "gamma": 0.2,
         "a_param": 0.75,
         "b_param": 0.6,
-        "time": 30000,            # absolute target: users will run until clock=time in resume params
-        #"grid": False,
-        #"starting_position": "normal",
-        "epr_fraction": 1,      # 1.0 = pure EPR resume; <1.0 = EPR then CF
-        "cf_type": "mf",          # CF algorithm for the resume phase: "uk" or "ik"
-        "top_k": 30,
+        "time": 20000,            # absolute target: users will run until clock=time
+        "algorithm": "mf",        # algorithm for the resume phase
+        "top_k": 30,              # neighbors used when algorithm is uk/ik/mf
     }
 
     # ----------------------------------------------------------
@@ -141,23 +136,21 @@ def main():
     # Identifies which combined_analysis_data to load (lsa output).
     # "t0" = time of the original loaded batch (load_params["time"])
     # "t1" = time of the resume phase (resume_params["time"])
-    # epr_fraction_0/1 and cf_type_0/1 mirror the ef/cf tokens in
-    # the combined folder name; omit or set to defaults when unused.
+    # algorithm_0/1 mirror the alg0/alg1 tokens in the combined
+    # folder name; they must match what was used in load_params and
+    # resume_params respectively.
     # ----------------------------------------------------------
     combined_plot_params = {
         "ro": 0.1,
         "gamma": 0.2,
         "a_param": 0.75,
         "b_param": 0.6,
-        "t0": 30000,           # load_params["time"]
-        "t1": 230000,           # resume_params["time"]
-        "user_number": 1000,
-        "grid": True,
+        "t0": 10000,           # load_params["time"]
+        "t1": 20000,           # resume_params["time"]
+        "user_number": 5,
         "starting_position": "random",
-        "epr_fraction_0": 1,    # load_params["epr_fraction"]  (1 = pure EPR)
-        "epr_fraction_1": 1,    # resume_params["epr_fraction"] (1 = pure EPR)
-        # "cf_type_0": "ik",    # uncomment if epr_fraction_0 < 1
-        "cf_type_1": "mf",    # uncomment if epr_fraction_1 < 1
+        "algorithm_0": "ge",   # load_params["algorithm"]
+        "algorithm_1": "mf",   # resume_params["algorithm"]
         "combined": True,       # tells load_analysis_data() to use combined loaders
     }
 
@@ -173,22 +166,21 @@ def main():
     #   - Scalar values are shared across all series.
     #   - "combined": True must be set (mp works on combined_analysis_data).
     #
-    # Example with 4 series (t1 x cf_type_1 = 2 x 2 = 4):
+    # Example with 3 series (algorithm_1 has 3 values):
     #
     #   multiple_plot_params = {
-    #       "label":          ["long mf", "long ik", "short mf", "short ik"],
+    #       "label":          ["ge→mf", "ge→ik", "ge→uk"],
     #       "ro": 0.1, "gamma": 0.2, "a_param": 0.75, "b_param": 0.6,
     #       "t0": 30000,
-    #       "t1":             [230000, 10000],   # 2 values
-    #       "user_number": 1000, "grid": True, "starting_position": "random",
-    #       "epr_fraction_0": 1,
-    #       "epr_fraction_1": 0.2,
-    #       "cf_type_1":      ["mf", "ik"],       # 2 values → 2×2 = 4 combos
+    #       "t1": 230000,
+    #       "user_number": 1000, "starting_position": "random",
+    #       "algorithm_0": "ge",
+    #       "algorithm_1": ["mf", "ik", "uk"],
     #       "combined": True,
     #   }
     # ----------------------------------------------------------
     multiple_plot_params = {
-        "label":          [ "EPR mf", "EPR ik", "EPR uk", "EPR EPR", "EPR EPR","EPR EPR"],
+        "label":          ["EPR mf", "EPR ik", "EPR uk", "EPR ge", "EPR ge"],
         "ro": 0.1,
         "gamma": 0.2,
         "a_param": 0.75,
@@ -196,16 +188,14 @@ def main():
         "t0": 30000,
         "t1": 230000,
         "user_number": 1000,
-        "grid": True,
         "starting_position": "random",
-        "epr_fraction_0": 1,
-        "epr_fraction_1": [0.01, 1],
-        "cf_type_1":      ["mf", "ik", "uk"],
+        "algorithm_0": "ge",
+        "algorithm_1": ["mf", "ik", "uk", "ge"],
         "combined": True,
     }
 
     plot_list = [
-        "mobility",
+        #"mobility",
         "rg_distribution", #checked but still double plot   #mp
         "dist_distribution", #mp
         "freq_distribution", #mp

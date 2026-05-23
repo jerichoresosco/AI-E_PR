@@ -22,13 +22,14 @@ class Simulation:
     Phase 3 - PLOT     : load analysis data and generate all requested plots
 
     Each phase is self-contained and receives only the parameters it needs:
-        run(simulate_params, grid_params)   requires ro, gamma, a_param, b_param, user_number, time
-                                            optional: epr_fraction (default 1.0), top_k (default 10)
-                                            grid_params optional: cell_lenght, cell_number
+        run(simulate_params, grid_params)   requires ro, gamma, a_param, b_param, user_number, time,
+                                            algorithm ("ce"|"ge"|"uk"|"ik"|"mf")
+                                            optional: top_k (default 10, used for uk/ik/mf)
+                                            grid_params required when algorithm != "ce": cell_lenght, cell_number
         run_analysis(analyse_params, grid_params)
-                                            requires ro, gamma, a_param, b_param, time
-                                            grid_params optional: cell_lenght, cell_number
-        load_analysis_data(plot_params)     requires ro, gamma, a_param, b_param, time, [user_number]
+                                            requires ro, gamma, a_param, b_param, time, algorithm
+                                            grid_params required when algorithm != "ce"
+        load_analysis_data(plot_params)     requires ro, gamma, a_param, b_param, time, algorithm, [user_number]
         plot(plot_list)
 
     Additional entry points for chained simulations:
@@ -101,18 +102,23 @@ class Simulation:
 
     def run(self, simulate_params, grid_params=None):
         """
-        Run the EPR (+ optional CF) simulation and store results in self.users_list.
+        Run the EPR mobility simulation from scratch and store results in self.users_list.
+
+        Only EPR algorithms are accepted here. CF algorithms ("uk", "ik", "mf")
+        require pre-existing trajectory data and must be launched via resume()
+        after _reconstruct_users_from_raw().
 
         Parameters
         ----------
         simulate_params : dict
             Must contain: "ro", "gamma", "a_param", "b_param", "user_number", "time".
-            Optional:
-              "epr_fraction" (float, default 1.0) -- fraction of total time simulated
-                  with pure EPR before switching to collaborative filtering.
-                  Must be > 0. When 1.0 (default) the simulation is pure EPR.
-              "top_k" (int, default 10) -- number of most-similar neighbors considered
-                  per user during the CF phase.
+            Must contain: "algorithm" -- one of:
+              "ce"  : classic EPR (no grid)
+              "ge"  : grid EPR
+            CF algorithms ("uk", "ik", "mf") raise ValueError here.
+        grid_params : dict, optional
+            Required when algorithm is "ge". Must contain "cell_lenght" and
+            "cell_number".
         """
         ro           = simulate_params["ro"]
         gamma        = simulate_params["gamma"]
@@ -120,30 +126,42 @@ class Simulation:
         b_param      = simulate_params["b_param"]
         user_number  = simulate_params["user_number"]
         time         = simulate_params["time"]
-        grid_exists       = simulate_params["grid"]
+        algorithm         = simulate_params["algorithm"]
         starting_position = simulate_params["starting_position"]
-        epr_fraction      = simulate_params["epr_fraction"]
-        top_k        = simulate_params["top_k"]
-        cf_type      = simulate_params["cf_type"]
+        top_k        = simulate_params.get("top_k", 10)
+
+        _VALID_ALGORITHMS = ("ce", "ge", "uk", "ik", "mf")
+        if algorithm not in _VALID_ALGORITHMS:
+            raise ValueError(
+                f"run(): unknown algorithm '{algorithm}'. "
+                f"Must be one of: {_VALID_ALGORITHMS}"
+            )
+
+        # CF algorithms require pre-existing trajectory data and must be
+        # launched via resume() after _reconstruct_users_from_raw().
+        if algorithm not in ("ce", "ge"):
+            raise ValueError(
+                f"run(): algorithm='{algorithm}' is a CF algorithm and cannot be used "
+                f"to start a simulation from scratch. "
+                f"Use 'ce' or 'ge' for run(), then load the saved batch and call "
+                f"resume() with algorithm='{algorithm}'."
+            )
+
+        # Derive grid flag from algorithm
+        grid_exists = algorithm != "ce"
 
         # When grid is disabled every user starts at (0,0) regardless of what
         # starting_position says.  Normalise to "centered" before storing params
         # so that the saved folder name reflects the actual simulation behaviour.
         if not grid_exists and starting_position != "centered":
             logger.warning(
-                f"run(): grid=False but starting_position='{starting_position}' — "
+                f"run(): algorithm='ce' (no grid) but starting_position='{starting_position}' — "
                 f"all users will start at (0,0). Overriding to 'centered' for folder naming."
             )
             starting_position = "centered"
             simulate_params = {**simulate_params, "starting_position": "centered"}
 
         logger.info(f"Starting position: '{starting_position}'")
-
-        if epr_fraction <= 0:
-            raise ValueError(
-                "epr_fraction must be > 0. At least some EPR data is required "
-                "before the CF phase can build user similarities."
-            )
 
         # Store on self so User objects can access ro/gamma via self.simulation,
         # and save_raw_data() can build the correct folder name
@@ -155,7 +173,7 @@ class Simulation:
         self.grid_exists      = grid_exists
         self._starting_position = starting_position
 
-        if grid_exists == True:
+        if grid_exists:
             self._grid_params = grid_params
             self.grid_cell_lenght = grid_params["cell_lenght"]
             self.grid_cell_number = grid_params["cell_number"]
@@ -164,15 +182,13 @@ class Simulation:
                 #This definition is done following the grid logic, where the grid is defined from (0,0) to
                 #(cell_lenght*cell_number, cell_lenght*cell_number), so the center is in the middle of the grid, not at (0,0)
 
-        epr_time  = epr_fraction * time
         milestone = max(1, user_number // 10) #10% progress milestones for logging
         logger.info(
-            f"Starting EPR phase for {user_number} users "
-            f"(epr_fraction={epr_fraction}, epr_time={epr_time})..."
+            f"Starting simulation for {user_number} users (algorithm='{algorithm}')..."
         )
 
         # ---------------------------------------------------------------
-        # Phase 1: EPR
+        # EPR loop: create users and run them to full time
         # ---------------------------------------------------------------
         for i in range(user_number):
             if self._starting_position == "random":
@@ -201,7 +217,7 @@ class Simulation:
                 simulation=self,
                 initial_position=init_pos,
             )
-            while user.clock < epr_time:
+            while user.clock < time:
                 user.make_decision()
 
             self.users_list.append(user)
@@ -209,41 +225,6 @@ class Simulation:
             if (i + 1) % milestone == 0 or (i + 1) == user_number:
                 pct = ((i + 1) / user_number) * 100
                 logger.info(f"EPR progress: {pct:.0f}% ({i+1}/{user_number} users)")
-
-        # ------------------------------------------------------------------
-        # Phase 2: CF -- build neighbor data, then run CF for remaining time
-        # ------------------------------------------------------------------
-        if epr_fraction < 1.0:
-            cf_updates   = 4  ##NEED MAIN IMPLEMENTATION!!!!
-            n_intervals  = cf_updates + 1
-            cf_duration  = time - epr_time
-            interval_len = cf_duration / n_intervals
-
-            check_run_dir = None  # created on first interval, reused afterwards
-
-            for interval in range(n_intervals):
-                t_start = epr_time + interval * interval_len
-                t_end   = epr_time + (interval + 1) * interval_len
-
-                logger.info(
-                    f"CF interval {interval + 1}/{n_intervals}: "
-                    f"rebuilding similarities, running [{t_start:.1f}, {t_end:.1f}]..."
-                )
-                cf_neighbors, check_run_dir = model.utils_cf.build_cf_data(
-                    users_list     = self.users_list,
-                    top_k          = top_k,
-                    cf_type        = cf_type,
-                    simulate_params= self._simulate_params,
-                    grid_exists    = self.grid_exists,
-                    grid_params    = getattr(self, "_grid_params", None),
-                    check_run_dir  = check_run_dir,
-                    interval_idx   = interval,
-                )
-
-                for i, user in enumerate(self.users_list):
-                    neighbors = cf_neighbors[i]
-                    while user.clock < t_end:
-                        user.make_decision_cf(neighbors, cf_type)
 
         #TO BE SOLVED!!! Here we are trying to remove what is generated past the limit time, that is the last step for each user,
         #but this solution is not working properly, because what is updated in make_decision and make_decision_cf are user_history,
@@ -267,23 +248,16 @@ class Simulation:
         duration.  This means the value should be larger than the clock values
         the users already carry (i.e. the end-time of the previous run phase).
 
-        Supports the same EPR / EPR+CF logic as run():
-          - epr_fraction == 1.0  →  pure EPR for the whole resume window
-          - epr_fraction <  1.0  →  EPR up to (epr_fraction * extra_time), then CF
-
-        where extra_time = simulate_params["time"] - mean clock of users at entry.
-
-        This method updates self._simulate_params so that save_raw_data() and
-        run_analysis() will use the new parameters (including the new "time")
-        for folder naming.
+        The algorithm is taken from simulate_params["algorithm"] and must be
+        one of: "ce", "ge", "uk", "ik", "mf".
 
         Parameters
         ----------
         simulate_params : dict
-            Must contain: "ro", "gamma", "a_param", "b_param", "time",
-            "epr_fraction", "top_k", "cf_type".
-            "grid", "starting_position" and "user_number" must NOT be included:
-            grid and starting_position are inherited from the loaded simulation.
+            Must contain: "ro", "gamma", "a_param", "b_param", "time", "algorithm".
+            Optional: "top_k" (int, default 10) for CF algorithms.
+            "starting_position" and "user_number" must NOT be included:
+            they are inherited from the loaded simulation.
         grid_params : dict, optional
             When the simulation uses a grid, must contain "cell_lenght" and
             "cell_number".  When None (default) self._grid_params is reused
@@ -300,9 +274,10 @@ class Simulation:
         a_param      = simulate_params["a_param"]   # kept for symmetry; not used in loop
         b_param      = simulate_params["b_param"]
         time_target  = simulate_params["time"]
-        epr_fraction = simulate_params["epr_fraction"]
-        top_k        = simulate_params["top_k"]
-        cf_type      = simulate_params["cf_type"]
+        algorithm    = simulate_params["algorithm"]
+        top_k        = simulate_params.get("top_k", 10)
+
+        is_cf = algorithm not in ("ce", "ge")
 
         # grid and starting_position are inherited from the loaded simulation,
         # not taken from simulate_params.
@@ -311,7 +286,7 @@ class Simulation:
 
         # Inject into the params dict so that folder naming helpers (_make_run_folder,
         # _make_combined_run_folder) have access to them via self._simulate_params.
-        simulate_params = {**simulate_params, "grid": grid_exists, "starting_position": starting_position}
+        simulate_params = {**simulate_params, "starting_position": starting_position}
 
         self.ro               = ro
         self.gamma            = gamma
@@ -343,10 +318,10 @@ class Simulation:
         logger.info(
             f"Resuming simulation: {n_users} users, "
             f"clock range [{min(current_clocks):.1f}, {max(current_clocks):.1f}] "
-            f"→ target={time_target}, epr_fraction={epr_fraction}"
+            f"→ target={time_target}, algorithm='{algorithm}'"
         )
 
-        if epr_fraction == 1.0:
+        if not is_cf:
             # ---------------------------------------------------------------
             # Pure EPR resume
             # ---------------------------------------------------------------
@@ -359,29 +334,18 @@ class Simulation:
 
         else:
             # ---------------------------------------------------------------
-            # EPR phase up to epr_fraction * extra_time, then CF
+            # CF resume: run collaborative filtering for the full resume window
             # ---------------------------------------------------------------
-            epr_end = resume_start + epr_fraction * extra_time
-
-            logger.info(f"Resume EPR phase: running to clock={epr_end:.1f}...")
-            for i, user in enumerate(self.users_list):
-                while user.clock < epr_end:
-                    user.make_decision()
-                if (i + 1) % milestone == 0 or (i + 1) == n_users:
-                    pct = ((i + 1) / n_users) * 100
-                    logger.info(f"Resume EPR progress: {pct:.0f}% ({i+1}/{n_users} users)")
-
-            # CF intervals
             ##NEED MAIN IMPLEMENTATION!!!!
             cf_updates   = 4
             n_intervals  = cf_updates + 1
-            cf_duration  = time_target - epr_end
+            cf_duration  = time_target - resume_start
             interval_len = cf_duration / n_intervals
 
             check_run_dir = None  # created on first interval, reused afterwards
 
             for interval in range(n_intervals):
-                t_end = epr_end + (interval + 1) * interval_len
+                t_end = resume_start + (interval + 1) * interval_len
                 logger.info(
                     f"Resume CF interval {interval + 1}/{n_intervals}: "
                     f"rebuilding similarities, running to {t_end:.1f}..."
@@ -389,7 +353,7 @@ class Simulation:
                 cf_neighbors, check_run_dir = model.utils_cf.build_cf_data(
                     users_list     = self.users_list,
                     top_k          = top_k,
-                    cf_type        = cf_type,
+                    cf_type        = algorithm,
                     simulate_params= self._simulate_params,
                     grid_exists    = self.grid_exists,
                     grid_params    = getattr(self, "_grid_params", None),
@@ -399,7 +363,7 @@ class Simulation:
                 for i, user in enumerate(self.users_list):
                     neighbors = cf_neighbors[i]
                     while user.clock < t_end:
-                        user.make_decision_cf(neighbors, cf_type)
+                        user.make_decision_cf(neighbors, algorithm)
 
         for user in self.users_list:
             header    = user.user_history[0]
@@ -441,13 +405,13 @@ class Simulation:
         ----------
         load_params : dict
             Standard simulation parameter keys: "ro", "gamma", "a_param",
-            "b_param", "time", "grid", "starting_position" (optional).
+            "b_param", "time", "algorithm", "starting_position" (optional).
             Additional key:
                 "batch_id" (str, optional)
                     Exact timestamp folder name to load (e.g. "20240601_120000_123456").
                     When absent, the most-recent batch folder is selected automatically.
         grid_params : dict, optional
-            Required when load_params["grid"] is True.
+            Required when load_params["algorithm"] is not "ce".
             Must contain "cell_lenght" and "cell_number".
             When None, self._grid_params is used if available.
 
@@ -471,7 +435,8 @@ class Simulation:
             self.grid_cell_lenght = grid_params["cell_lenght"]
             self.grid_cell_number = grid_params["cell_number"]
 
-        grid_exists       = load_params["grid"]
+        algorithm         = load_params["algorithm"]
+        grid_exists       = algorithm != "ce"
         starting_position = load_params["starting_position"]
         batch_id          = load_params.get("batch_id", None)
 
@@ -479,7 +444,7 @@ class Simulation:
         # "centered" so the folder lookup matches what run() would have saved.
         if not grid_exists and starting_position != "centered":
             logger.warning(
-                f"_reconstruct_users_from_raw(): grid=False but "
+                f"_reconstruct_users_from_raw(): algorithm='ce' (no grid) but "
                 f"starting_position='{starting_position}' — overriding to 'centered' "
                 f"for folder lookup."
             )
@@ -492,10 +457,8 @@ class Simulation:
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         base_folder  = os.path.join(project_root, "raw_data")
 
-        efrac   = float(load_params["epr_fraction"])
-        sp      = load_params["starting_position"]
-        cf_type = load_params["cf_type"]
-        cf_part = f"_cf_{cf_type}" if (efrac < 1.0 and cf_type is not None) else ""
+        sp       = load_params["starting_position"]
+        alg      = load_params["algorithm"]
         _sp_abbr = {"centered": "c", "random": "r", "normal": "n"}.get(sp, "c")
 
         if grid_exists and grid_params is not None:
@@ -505,8 +468,7 @@ class Simulation:
                 f"_t_{load_params['time']}"
                 f"_cl_{grid_params['cell_lenght']}_cn_{grid_params['cell_number']}"
                 f"_sp_{_sp_abbr}"
-                f"_ef_{efrac}"
-                f"{cf_part}"
+                f"_alg_{alg}"
             )
         else:
             param_folder_name = (
@@ -514,8 +476,7 @@ class Simulation:
                 f"_a_{load_params['a_param']}_b_{load_params['b_param']}"
                 f"_t_{load_params['time']}"
                 f"_sp_{_sp_abbr}"
-                f"_ef_{efrac}"
-                f"{cf_part}"
+                f"_alg_{alg}"
             )
 
         param_folder = os.path.join(base_folder, param_folder_name)
@@ -876,12 +837,15 @@ class Simulation:
             else:
                 #Analyse mode: load from raw_data/ using analyse_params filters
                 logger.info("Loading raw data via analyse_params...")
-                filters = {k: v for k, v in analyse_params.items() if k != "grid"} #removing grid from filters
-                if analyse_params["grid"] == True:
-                    filters.update(grid_params) #Adding grid values after bool value has been removed (if is the case)
+                alg = analyse_params.get("algorithm", "ce")
+                grid_active = alg != "ce"
+                filters = {k: v for k, v in analyse_params.items()
+                           if k not in ("algorithm", "starting_position")}
+                if grid_active:
+                    filters.update(grid_params) #Adding grid values
                 loaded = model.utils.load_raw_parquet(
                     filters=filters,
-                    grid = analyse_params["grid"],
+                    grid=grid_active,
                     return_run_folders=True,
                 )
                 self.users_list = [entry["data"] for entry in loaded]
@@ -904,10 +868,13 @@ class Simulation:
                 resume_params = analyse_params,
                 grid_params   = grid_params,
             )
-        elif analyse_params["grid"] == True:
-            analysis_folder = self._make_run_folder("analysis_data", analyse_params, grid_params)
         else:
-            analysis_folder = self._make_run_folder("analysis_data", analyse_params)
+            alg_for_folder = analyse_params.get("algorithm", getattr(self, "_simulate_params", {}).get("algorithm", "ce"))
+            grid_active    = alg_for_folder != "ce"
+            if grid_active:
+                analysis_folder = self._make_run_folder("analysis_data", analyse_params, grid_params)
+            else:
+                analysis_folder = self._make_run_folder("analysis_data", analyse_params)
 
         total     = len(self.users_list)
         milestone = max(1, total // 10)
@@ -960,7 +927,7 @@ class Simulation:
             s_over_time_df.to_parquet(
                 os.path.join(analysis_folder, f"user_{i}_s_over_time.parquet"),  index=False)
 
-            if analyse_params.get("grid", getattr(self, "grid_exists", False)):
+            if analyse_params.get("algorithm", getattr(self, "_simulate_params", {}).get("algorithm", "ce")) != "ce":
                 if isinstance(user_entry, model.user.User) and user_entry.has_grid:
                     grid_df = pd.DataFrame(user_entry.grid.matrix)
                 elif isinstance(user_entry, dict) and user_entry.get("grid") is not None:
@@ -1015,7 +982,7 @@ class Simulation:
             {"metric": "mean_s_real",              "value": float(np.nanmean(_all_s_real))},
         ])
 
-        grid_active = analyse_params.get("grid", getattr(self, "grid_exists", False))
+        grid_active = analyse_params.get("algorithm", getattr(self, "_simulate_params", {}).get("algorithm", "ce")) != "ce"
         if grid_active:
             batch_grid, _ = model.utils.compute_and_save_aggregate_grid(analysis_folder)
             moran_i_dict  = model.utils.compute_moran_i(batch_grid)
@@ -1049,9 +1016,9 @@ class Simulation:
         plot_params : dict
             Must contain: "ro", "gamma", "a_param", "b_param", "time".
             Optional: "user_number" (positive = first N, negative = last N, absent = all),
-            "grid" (bool), "starting_position" (str), "epr_fraction" (float).
+            "algorithm" (str), "starting_position" (str).
         grid_params : dict, optional
-            When provided (and plot_params["grid"] is True), must contain
+            When provided (and algorithm implies a grid), must contain
             "cell_lenght" and "cell_number". Merged into the filter dict passed
             to the loader so the correct analysis folder is located.
         plot_list : list of str, optional
@@ -1107,8 +1074,18 @@ class Simulation:
 
         combined = plot_params.get("combined", False)
 
+        # Derive whether a grid was used from the algorithm field.
+        # For combined params (cp/mp modes) the key is "algorithm_0" (the base run);
+        # for normal params (p mode) the key is "algorithm".
+        if combined:
+            alg0        = plot_params.get("algorithm_0", "ce")
+            grid_active = alg0 != "ce"
+        else:
+            alg         = plot_params.get("algorithm", "ce")
+            grid_active = alg != "ce"
+
         filters = {**plot_params}
-        if plot_params.get("grid") and grid_params:
+        if grid_active and grid_params:
             filters.update(grid_params)
 
         # gamma needed by freq_distribution plot
@@ -1552,36 +1529,16 @@ class Simulation:
 
         Folder hierarchy:
             <project_root>/<data_type>/
-                ro_{ro}_g_{gamma}_a_{a}_b_{b}_t_{time}/
+                ro_{ro}_g_{gamma}_a_{a}_b_{b}_t_{time}_[cl_{cl}_cn_{cn}]_sp_{sp}_alg_{algorithm}/
                     {YYYYMMDD_HHMMSS_ffffff}/
-
-        When grid_params is provided, the parameter folder is extended with
-        grid dimensions:
-                ro_{ro}_..._t_{time}_cl_{cell_lenght}_cn_{cell_number}/
-
-        The single-token keys ``cl``, ``cn``, and ``rs`` are used
-        so that the folder-name parser in the data loaders can split on
-        ``_`` and pair tokens unambiguously.
-
-        When a grid is active and ``starting_position="normal"`` is present in
-        params, the suffix ``_rs_y`` is appended to distinguish
-        random-origin runs from fixed-origin ones.
-
-        When ``epr_fraction`` is present in params and < 1.0, the suffix
-        ``_ef_{epr_fraction}`` is appended to distinguish CF runs from
-        pure EPR runs.
-
-        When ``epr_fraction`` < 1.0 and ``cf_type`` is present in params,
-        the suffix ``_cf_{cf_type}`` is appended (e.g. ``_cf_uk``, ``_cf_ik``).
 
         Parameters
         ----------
         data_type : str
             e.g. "raw_data" or "analysis_data".
         params : dict
-            Must contain "ro", "gamma", "a_param", "b_param", "time".
-            Optional: "starting_position" (str), "epr_fraction" (float),
-            "cf_type" (str, only written when epr_fraction < 1.0).
+            Must contain "ro", "gamma", "a_param", "b_param", "time", "algorithm".
+            Optional: "starting_position" (str, default "centered").
         grid_params : dict, optional
             When provided, must contain "cell_lenght" and "cell_number".
 
@@ -1593,12 +1550,8 @@ class Simulation:
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         base_folder  = os.path.join(project_root, data_type)
 
-        efrac   = float(params.get("epr_fraction", 1.0))
-        sp      = params.get("starting_position", "centered")
-        cf_type = params.get("cf_type", None)
-
-        # Append cf_type only when a CF phase is actually present
-        cf_part = f"_cf_{cf_type}" if (efrac < 1.0 and cf_type is not None) else ""
+        sp  = params.get("starting_position", "centered")
+        alg = params.get("algorithm", "ce")
 
         # Map starting_position to single-letter abbreviation: c / r / n
         _sp_abbr = {"centered": "c", "random": "r", "normal": "n"}.get(sp, "c")
@@ -1609,8 +1562,7 @@ class Simulation:
                 f"ro_{params['ro']}_g_{params['gamma']}"
                 f"_a_{params['a_param']}_b_{params['b_param']}_t_{params['time']}"
                 f"_sp_{_sp_abbr}"
-                f"_ef_{efrac}"
-                f"{cf_part}"
+                f"_alg_{alg}"
             )
         else:
             param_folder = os.path.join(
@@ -1619,8 +1571,7 @@ class Simulation:
                 f"_a_{params['a_param']}_b_{params['b_param']}_t_{params['time']}"
                 f"_cl_{grid_params['cell_lenght']}_cn_{grid_params['cell_number']}"
                 f"_sp_{_sp_abbr}"
-                f"_ef_{efrac}"
-                f"{cf_part}"
+                f"_alg_{alg}"
             )
         run_folder = os.path.join(param_folder, datetime.now().strftime("%Y%m%d_%H%M%S_%f"))
         os.makedirs(run_folder, exist_ok=True)
@@ -1634,13 +1585,9 @@ class Simulation:
         Folder hierarchy
         ----------------
         <project_root>/<data_type>/
-            <base_param_folder>/        ← built from base_params  (the loaded batch)
-                <resume_param_folder>/  ← built from resume_params (the new simulation)
-                    {YYYYMMDD_HHMMSS_ffffff}/
-
-        Both param folder names follow the same naming convention as
-        _make_run_folder(): ro / gamma / a / b / time [/ clen / cnum]
-        [/ rstart_yes] [/ efrac_X].
+            ro_{ro}_g_{gamma}_a_{a}_b_{b}_t0_{t0}_t1_{t1}
+            [_cl_{cl}_cn_{cn}]_sp_{sp}_alg0_{alg0}_alg1_{alg1}/
+                {YYYYMMDD_HHMMSS_ffffff}/
 
         Parameters
         ----------
@@ -1649,13 +1596,12 @@ class Simulation:
             "combined_analysis_data".
         base_params : dict
             Parameters of the original loaded batch.
-            Must contain "ro", "gamma", "a_param", "b_param", "time".
+            Must contain "ro", "gamma", "a_param", "b_param", "time", "algorithm".
         resume_params : dict
             Parameters used for the resume phase.
-            Must contain "ro", "gamma", "a_param", "b_param", "time".
+            Must contain "ro", "gamma", "a_param", "b_param", "time", "algorithm".
         grid_params : dict, optional
             When provided, must contain "cell_lenght" and "cell_number".
-            Applied to both folder levels.
 
         Returns
         -------
@@ -1665,28 +1611,16 @@ class Simulation:
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         base_folder  = os.path.join(project_root, data_type)
 
-        # Shared physical params (must match between base and resume)
         ro      = base_params["ro"]
         gamma   = base_params["gamma"]
         a_param = base_params["a_param"]
         b_param = base_params["b_param"]
         sp      = base_params.get("starting_position", "centered")
 
-        t0 = base_params["time"]
-        t1 = resume_params["time"]
-
-        ef0 = float(base_params.get("epr_fraction", 1.0))
-        ef1 = float(resume_params.get("epr_fraction", 1.0))
-        ef_part = f"_ef0_{ef0}_ef1_{ef1}"
-
-        # Append cf_type tokens only when a CF phase was/is active
-        cf0 = base_params.get("cf_type", None)
-        cf1 = resume_params.get("cf_type", None)
-        cf_part = ""
-        if ef0 < 1.0 and cf0 is not None:
-            cf_part += f"_cf0_{cf0}"
-        if ef1 < 1.0 and cf1 is not None:
-            cf_part += f"_cf1_{cf1}"
+        t0   = base_params["time"]
+        t1   = resume_params["time"]
+        alg0 = base_params.get("algorithm", "ce")
+        alg1 = resume_params.get("algorithm", "ce")
 
         _sp_abbr = {"centered": "c", "random": "r", "normal": "n"}.get(sp, "c")
 
@@ -1697,8 +1631,7 @@ class Simulation:
                 f"_t0_{t0}_t1_{t1}"
                 f"_cl_{grid_params['cell_lenght']}_cn_{grid_params['cell_number']}"
                 f"_sp_{_sp_abbr}"
-                f"{ef_part}"
-                f"{cf_part}"
+                f"_alg0_{alg0}_alg1_{alg1}"
             )
         else:
             param_folder_name = (
@@ -1706,8 +1639,7 @@ class Simulation:
                 f"_a_{a_param}_b_{b_param}"
                 f"_t0_{t0}_t1_{t1}"
                 f"_sp_{_sp_abbr}"
-                f"{ef_part}"
-                f"{cf_part}"
+                f"_alg0_{alg0}_alg1_{alg1}"
             )
 
         run_folder = os.path.join(
