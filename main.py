@@ -18,7 +18,7 @@ def main():
     # Choose mode
     # ==========================================================
 
-    mode = "cp"  # Options (short aliases):
+    mode = "mp"  # Options (short aliases):
                         #   "s"     run simulation, save raw_data only
                         #   "a"    - load raw_data, compute & save analysis_data
                         #   "sa"   - simulate then analyse without reloading from disk
@@ -127,7 +127,7 @@ def main():
         "a_param": 0.75,
         "b_param": 0.6,
         "time": 20000,            # absolute target: users will run until clock=time
-        "algorithm": "mf",        # algorithm for the resume phase
+        "algorithm": "ge",        # algorithm for the resume phase
         "top_k": 30,              # neighbors used when algorithm is uk/ik/mf
     }
 
@@ -139,6 +139,8 @@ def main():
     # algorithm_0/1 mirror the alg0/alg1 tokens in the combined
     # folder name; they must match what was used in load_params and
     # resume_params respectively.
+    # "variant": "p" = pure (only the resumed phase data)
+    #            "m" = mixed (full concatenated data, default)
     # ----------------------------------------------------------
     combined_plot_params = {
         "ro": 0.1,
@@ -152,6 +154,7 @@ def main():
         "algorithm_0": "ge",   # load_params["algorithm"]
         "algorithm_1": "mf",   # resume_params["algorithm"]
         "combined": True,       # tells load_analysis_data() to use combined loaders
+        "variant": "m",        # "p" = pure (resumed phase only), "m" = mixed (full)
     }
 
     # ----------------------------------------------------------
@@ -180,18 +183,19 @@ def main():
     #   }
     # ----------------------------------------------------------
     multiple_plot_params = {
-        "label":          ["EPR mf", "EPR ik", "EPR uk", "EPR ge", "EPR ge"],
+        "label":          ["EPR mf", "EPR ik", "EPR uk", "EPR ge"],
         "ro": 0.1,
         "gamma": 0.2,
         "a_param": 0.75,
         "b_param": 0.6,
-        "t0": 30000,
-        "t1": 230000,
-        "user_number": 1000,
+        "t0": 10000,
+        "t1": 20000,
+        "user_number": 5,
         "starting_position": "random",
         "algorithm_0": "ge",
         "algorithm_1": ["mf", "ik", "uk", "ge"],
         "combined": True,
+        "variant": "p",
     }
 
     plot_list = [

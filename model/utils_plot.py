@@ -43,8 +43,24 @@ def build_plot_title(base_title, filters):
     if not filters:
         return base_title
 
-    param_str = ", ".join(f"{_PARAM_ABBREV.get(k, k)}={v}" for k, v in filters.items())
-    return f"{base_title} ({param_str})"
+    # If a variant is present ("pure" or "mixed"), prepend it to the base title
+    # so it is always visible regardless of where the title is truncated.
+    variant = filters.get("variant")
+    if variant in ("pure", "mixed"):
+        prefixed_title = f"[{variant.upper()}] {base_title}"
+    else:
+        prefixed_title = base_title
+
+    # Exclude internal/display-only keys from the parameter string
+    _EXCLUDE = {"variant", "combined"}
+    param_str = ", ".join(
+        f"{_PARAM_ABBREV.get(k, k)}={v}"
+        for k, v in filters.items()
+        if k not in _EXCLUDE
+    )
+    if param_str:
+        return f"{prefixed_title} ({param_str})"
+    return prefixed_title
         
 
 def filepath_save_plot_or_show(folder = "test_plots", name: str = None, filters: dict = None, show = False):

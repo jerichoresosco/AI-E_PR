@@ -1118,6 +1118,8 @@ def load_combined_analysis_parquet(filters=None, needed_files=None):
         Must contain: "ro", "gamma", "a_param", "b_param", "t0", "t1".
         Optional: "starting_position", "algorithm_0", "algorithm_1",
         "user_number", "cell_lenght", "cell_number".
+        "variant" (str, optional): "pure" or "mixed" (default "mixed").
+            Selects the subfolder inside each batch timestamp folder.
     needed_files : set of str, optional
         Subset of file-map keys to load.  When None, all files are loaded.
 
@@ -1132,6 +1134,7 @@ def load_combined_analysis_parquet(filters=None, needed_files=None):
         filters = {}
 
     user_number = filters.get("user_number", None)
+    variant     = filters.get("variant", "mixed")   # "pure" or "mixed"
 
     project_root = os.path.dirname(os.path.dirname(
         os.path.abspath(inspect.getfile(inspect.currentframe()))
@@ -1172,7 +1175,7 @@ def load_combined_analysis_parquet(filters=None, needed_files=None):
     else:
         file_map = full_file_map
 
-    # Load directly from the batch subfolders inside param_folder
+    # Load from batch subfolders, navigating into the variant subfolder
     primary_suffix = next(iter(file_map.values()))
     early_stop = user_number if (user_number is not None and user_number > 0) else None
 
@@ -1181,9 +1184,14 @@ def load_combined_analysis_parquet(filters=None, needed_files=None):
     for batch_id in sorted(os.listdir(param_folder)):
         if done:
             break
-        run_path = os.path.join(param_folder, batch_id)
-        if not os.path.isdir(run_path):
+        batch_path = os.path.join(param_folder, batch_id)
+        if not os.path.isdir(batch_path):
             continue
+
+        # Navigate into variant subfolder (pure/ or mixed/).
+        # Fall back to the batch folder itself for old-format data that has no subfolders.
+        variant_path = os.path.join(batch_path, variant)
+        run_path = variant_path if os.path.isdir(variant_path) else batch_path
 
         # Collect user indices from the primary file
         user_indices = []
@@ -1211,11 +1219,11 @@ def load_combined_analysis_parquet(filters=None, needed_files=None):
             if (pos + 1) % milestone == 0 or (pos + 1) == total_in_run:
                 pct = ((pos + 1) / total_in_run) * 100
                 logger.info(
-                    f"Loading progress: {pct:.0f}% ({pos+1}/{total_in_run} users) [{batch_id}]"
+                    f"Loading progress: {pct:.0f}% ({pos+1}/{total_in_run} users) [{batch_id}/{variant}]"
                 )
 
     loaded = _apply_user_number_slice(loaded, user_number)
-    logger.info(f"Combined analysis data loaded: {len(loaded)} users")
+    logger.info(f"Combined analysis data loaded: {len(loaded)} users (variant={variant})")
     return loaded
 
 
@@ -1229,6 +1237,7 @@ def load_combined_all_aggregate_grids(filters):
     ----------
     filters : dict
         Same keys as load_combined_analysis_parquet().
+        "variant" (str, optional): "pure" or "mixed" (default "mixed").
 
     Returns
     -------
@@ -1241,6 +1250,8 @@ def load_combined_all_aggregate_grids(filters):
     ))
     base_folder = os.path.join(project_root, "combined_analysis_data")
 
+    variant = filters.get("variant", "mixed")
+
     param_folder_name = _build_combined_param_folder_name(filters)
     param_folder = os.path.join(base_folder, param_folder_name)
 
@@ -1248,6 +1259,9 @@ def load_combined_all_aggregate_grids(filters):
         logger.warning(f"Param folder not found for combined aggregate grids: {param_folder}")
         return None, 0, []
 
+    # Param-level aggregate: look inside the variant subfolder of param_folder
+    # (a param-level aggregate_grid.parquet placed directly in param_folder is
+    #  not written by the new code; fall back gracefully if absent)
     param_agg_path = os.path.join(param_folder, "aggregate_grid.parquet")
     param_grid = (
         pd.read_parquet(param_agg_path).values.astype(int)
@@ -1257,21 +1271,25 @@ def load_combined_all_aggregate_grids(filters):
     batch_grids = []
     param_user_count = 0
     for entry in sorted(os.listdir(param_folder)):
-        entry_path = os.path.join(param_folder, entry)
-        if not os.path.isdir(entry_path):
+        batch_path = os.path.join(param_folder, entry)
+        if not os.path.isdir(batch_path):
             continue
-        agg_path = os.path.join(entry_path, "aggregate_grid.parquet")
+        # Navigate into variant subfolder; fall back to batch folder for old-format data
+        variant_path = os.path.join(batch_path, variant)
+        run_path = variant_path if os.path.isdir(variant_path) else batch_path
+
+        agg_path = os.path.join(run_path, "aggregate_grid.parquet")
         if os.path.exists(agg_path):
             mat = pd.read_parquet(agg_path).values.astype(int)
             batch_user_count = sum(
-                1 for f in os.listdir(entry_path)
+                1 for f in os.listdir(run_path)
                 if f.startswith("user_") and f.endswith("_grid.parquet")
             )
             batch_grids.append((entry, mat, batch_user_count))
             param_user_count += batch_user_count
 
     logger.info(
-        f"Loaded combined aggregate grids: 1 param-level ({param_user_count} users), "
+        f"Loaded combined aggregate grids (variant={variant}): 1 param-level ({param_user_count} users), "
         f"{len(batch_grids)} batch-level"
     )
     return param_grid, param_user_count, batch_grids
@@ -1287,6 +1305,7 @@ def load_combined_all_batch_stats(filters):
     ----------
     filters : dict
         Same keys as load_combined_analysis_parquet().
+        "variant" (str, optional): "pure" or "mixed" (default "mixed").
 
     Returns
     -------
@@ -1297,10 +1316,12 @@ def load_combined_all_batch_stats(filters):
     ))
     base_folder = os.path.join(project_root, "combined_analysis_data")
 
+    variant = filters.get("variant", "mixed")
+
     param_folder_name = _build_combined_param_folder_name(filters)
     param_folder = os.path.join(base_folder, param_folder_name)
 
-    logger.info(f"load_combined_all_batch_stats looking for: {param_folder}")
+    logger.info(f"load_combined_all_batch_stats looking for: {param_folder} (variant={variant})")
     if not os.path.exists(param_folder):
         if os.path.exists(base_folder):
             available = sorted(
@@ -1318,18 +1339,22 @@ def load_combined_all_batch_stats(filters):
 
     batch_stats_list = []
     for entry in sorted(os.listdir(param_folder)):
-        entry_path = os.path.join(param_folder, entry)
-        if not os.path.isdir(entry_path):
+        batch_path = os.path.join(param_folder, entry)
+        if not os.path.isdir(batch_path):
             continue
-        stats_path = os.path.join(entry_path, "batch_stats.parquet")
+        # Navigate into variant subfolder; fall back to batch folder for old-format data
+        variant_path = os.path.join(batch_path, variant)
+        run_path = variant_path if os.path.isdir(variant_path) else batch_path
+
+        stats_path = os.path.join(run_path, "batch_stats.parquet")
         if os.path.exists(stats_path):
             stats_df = pd.read_parquet(stats_path)
             batch_stats_list.append((entry, stats_df))
-            logger.info(f"  Found combined batch stats: {entry}")
+            logger.info(f"  Found combined batch stats: {entry}/{variant}")
         else:
-            logger.debug(f"  Skipping (no batch_stats.parquet): {entry}")
+            logger.debug(f"  Skipping (no batch_stats.parquet): {entry}/{variant}")
 
-    logger.info(f"Loaded combined batch stats for {len(batch_stats_list)} batch(es) from: {param_folder}")
+    logger.info(f"Loaded combined batch stats for {len(batch_stats_list)} batch(es) from: {param_folder} (variant={variant})")
     return batch_stats_list
 
 

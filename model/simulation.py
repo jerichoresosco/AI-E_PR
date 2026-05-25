@@ -862,12 +862,19 @@ class Simulation:
                     "run_analysis(combined=True) requires _load_params to be set. "
                     "Call _reconstruct_users_from_raw() before this method."
                 )
-            analysis_folder = self._make_combined_run_folder(
+            batch_run_folder = self._make_combined_run_folder(
                 "combined_analysis_data",
                 base_params   = self._load_params,
                 resume_params = analyse_params,
                 grid_params   = grid_params,
             )
+            # Create the two variant subfolders inside the batch timestamp folder
+            analysis_folder_mixed = os.path.join(batch_run_folder, "mixed")
+            analysis_folder_pure  = os.path.join(batch_run_folder, "pure")
+            os.makedirs(analysis_folder_mixed, exist_ok=True)
+            os.makedirs(analysis_folder_pure,  exist_ok=True)
+            # The clock threshold that separates the "loaded" phase from the "resumed" phase
+            _pure_t_start = self._load_params["time"]
         else:
             alg_for_folder = analyse_params.get("algorithm", getattr(self, "_simulate_params", {}).get("algorithm", "ce"))
             grid_active    = alg_for_folder != "ce"
@@ -879,10 +886,26 @@ class Simulation:
         total     = len(self.users_list)
         milestone = max(1, total // 10)
 
-        #List of raw data
-        user_history_df_list = []
+        # Determine which folders to write into.
+        # In combined (lsa) mode we write two variants:
+        #   mixed/ → full history (loaded phase + resumed phase), same as before
+        #   pure/  → only the resumed phase (rows with Clock > _pure_t_start)
+        # In non-combined mode we use a single analysis_folder as before.
+        if combined:
+            _variant_folders = [
+                ("mixed", analysis_folder_mixed),
+                ("pure",  analysis_folder_pure),
+            ]
+        else:
+            _variant_folders = [
+                (None, analysis_folder),
+            ]
+
+        # Collect full DataFrames for Gini / batch-stats (always computed on "mixed" / full data)
+        user_history_df_list  = []
         venue_history_df_list = []
 
+        # We iterate users once, build both variants in the same pass.
         for i, user_entry in enumerate(self.users_list):
             if isinstance(user_entry, model.user.User):
                 user_history_df  = pd.DataFrame(
@@ -898,102 +921,130 @@ class Simulation:
             user_history_df_list.append(user_history_df)
             venue_history_df_list.append(venue_history_df)
 
-            stats_df        = model.utils.compute_stats(user_history_df, venue_history_df)
-            rg_over_time_df = model.utils.compute_rg_over_time(user_history_df)
-            s_over_time_df  = model.utils.compute_s_over_time(user_history_df)
-
-            # -- mean travel distance (avg of Distance column, excluding NaN/0) --
-            dist_col = user_history_df["Distance"].dropna()
-            dist_col = dist_col[dist_col > 0]
-            mean_dist = float(dist_col.mean()) if len(dist_col) > 0 else 0.0
-
-            # -- number of distinct venues visited --
-            num_venues = int(len(venue_history_df))
-
-            extra_rows = pd.DataFrame([
-                {"metric": "mean_travel_distance", "value": mean_dist},
-                {"metric": "num_venues",            "value": float(num_venues)},
-            ])
-            stats_df = pd.concat([stats_df, extra_rows], ignore_index=True)
-
-            user_history_df.to_parquet(
-                os.path.join(analysis_folder, f"user_{i}_history.parquet"),      index=False)
-            venue_history_df.to_parquet(
-                os.path.join(analysis_folder, f"user_{i}_venue.parquet"),        index=False)
-            stats_df.to_parquet(
-                os.path.join(analysis_folder, f"user_{i}_stats.parquet"),        index=False)
-            rg_over_time_df.to_parquet(
-                os.path.join(analysis_folder, f"user_{i}_rg_over_time.parquet"), index=False)
-            s_over_time_df.to_parquet(
-                os.path.join(analysis_folder, f"user_{i}_s_over_time.parquet"),  index=False)
-
-            if analyse_params.get("algorithm", getattr(self, "_simulate_params", {}).get("algorithm", "ce")) != "ce":
+            # Resolve grid_df once (shared across variants)
+            grid_df = None
+            alg_key = analyse_params.get("algorithm", getattr(self, "_simulate_params", {}).get("algorithm", "ce"))
+            if alg_key != "ce":
                 if isinstance(user_entry, model.user.User) and user_entry.has_grid:
                     grid_df = pd.DataFrame(user_entry.grid.matrix)
                 elif isinstance(user_entry, dict) and user_entry.get("grid") is not None:
                     grid_df = user_entry["grid"]
-                else:
-                    grid_df = None
                 if grid_df is not None:
                     grid_df.columns = grid_df.columns.astype(str)
+
+            for _variant, _folder in _variant_folders:
+                # For "pure" variant: trim history to rows after the loaded phase clock
+                if _variant == "pure":
+                    uh = user_history_df[user_history_df["Clock"] > _pure_t_start].copy()
+                    # Rebuild venue_history counting only visits that appear in the pure window
+                    pure_venues = uh["Destination"].dropna().unique()
+                    vh = venue_history_df[venue_history_df.iloc[:, 0].isin(pure_venues)].copy()
+                else:
+                    uh = user_history_df
+                    vh = venue_history_df
+
+                stats_df        = model.utils.compute_stats(uh, vh)
+                rg_over_time_df = model.utils.compute_rg_over_time(uh)
+                s_over_time_df  = model.utils.compute_s_over_time(uh)
+
+                dist_col  = uh["Distance"].dropna()
+                dist_col  = dist_col[dist_col > 0]
+                mean_dist = float(dist_col.mean()) if len(dist_col) > 0 else 0.0
+                num_venues = int(len(vh))
+
+                extra_rows = pd.DataFrame([
+                    {"metric": "mean_travel_distance", "value": mean_dist},
+                    {"metric": "num_venues",            "value": float(num_venues)},
+                ])
+                stats_df = pd.concat([stats_df, extra_rows], ignore_index=True)
+
+                uh.to_parquet(
+                    os.path.join(_folder, f"user_{i}_history.parquet"),      index=False)
+                vh.to_parquet(
+                    os.path.join(_folder, f"user_{i}_venue.parquet"),        index=False)
+                stats_df.to_parquet(
+                    os.path.join(_folder, f"user_{i}_stats.parquet"),        index=False)
+                rg_over_time_df.to_parquet(
+                    os.path.join(_folder, f"user_{i}_rg_over_time.parquet"), index=False)
+                s_over_time_df.to_parquet(
+                    os.path.join(_folder, f"user_{i}_s_over_time.parquet"),  index=False)
+
+                if grid_df is not None:
                     grid_df.to_parquet(
-                        os.path.join(analysis_folder, f"user_{i}_grid.parquet"), index=False)
+                        os.path.join(_folder, f"user_{i}_grid.parquet"), index=False)
 
             if (i + 1) % milestone == 0 or (i + 1) == total:
                 pct = ((i + 1) / total) * 100
                 logger.info(f"Analysis progress: {pct:.0f}% ({i+1}/{total} users)")
 
-        gini_ind  = model.utils.compute_individual_gini(venue_history_df_list)
-        gini_coll = model.utils.compute_collective_gini(venue_history_df_list)
-
         # ------------------------------------------------------------------
-        # Aggregate per-user stats for batch summary 
+        # Batch-level summary stats and aggregate grids.
+        # In combined mode: compute for each variant folder independently.
+        # In non-combined mode: compute once for the single analysis_folder.
         # ------------------------------------------------------------------
-        _all_rg      = []
-        _all_2rg     = []
-        _all_md      = []
-        _all_nv      = []
-        _all_s_rand  = []
-        _all_s_unc   = []
-        _all_s_real  = []
-        for i in range(total):
-            _sf = pd.read_parquet(os.path.join(analysis_folder, f"user_{i}_stats.parquet"))
-            def _get(metric):
-                row = _sf.loc[_sf["metric"] == metric, "value"]
-                return float(row.iloc[0]) if len(row) else float("nan")
-            _all_rg.append(     _get("radius of gyration"))
-            _all_2rg.append(    _get("radius of gyration two"))
-            _all_md.append(     _get("mean_travel_distance"))
-            _all_nv.append(     _get("num_venues"))
-            _all_s_rand.append( _get("s_rand"))
-            _all_s_unc.append(  _get("s_unc"))
-            _all_s_real.append( _get("s_real"))
+        def _compute_and_save_batch_stats(target_folder, uhdf_list, vhdf_list):
+            gini_ind  = model.utils.compute_individual_gini(vhdf_list)
+            gini_coll = model.utils.compute_collective_gini(vhdf_list)
 
-        batch_stats_df = pd.DataFrame([
-            {"metric": "gini_collective",          "value": gini_coll},
-            {"metric": "gini_individual",          "value": gini_ind},
-            {"metric": "n_users",                  "value": float(total)},
-            {"metric": "mean_rg",                  "value": float(np.nanmean(_all_rg))},
-            {"metric": "mean_2rg",                 "value": float(np.nanmean(_all_2rg))},
-            {"metric": "mean_travel_distance",     "value": float(np.nanmean(_all_md))},
-            {"metric": "mean_num_venues",          "value": float(np.nanmean(_all_nv))},
-            {"metric": "mean_s_rand",              "value": float(np.nanmean(_all_s_rand))},
-            {"metric": "mean_s_unc",               "value": float(np.nanmean(_all_s_unc))},
-            {"metric": "mean_s_real",              "value": float(np.nanmean(_all_s_real))},
-        ])
+            _all_rg      = []
+            _all_2rg     = []
+            _all_md      = []
+            _all_nv      = []
+            _all_s_rand  = []
+            _all_s_unc   = []
+            _all_s_real  = []
+            for j in range(len(uhdf_list)):
+                _sf = pd.read_parquet(os.path.join(target_folder, f"user_{j}_stats.parquet"))
+                def _get(metric, _sf=_sf):
+                    row = _sf.loc[_sf["metric"] == metric, "value"]
+                    return float(row.iloc[0]) if len(row) else float("nan")
+                _all_rg.append(     _get("radius of gyration"))
+                _all_2rg.append(    _get("radius of gyration two"))
+                _all_md.append(     _get("mean_travel_distance"))
+                _all_nv.append(     _get("num_venues"))
+                _all_s_rand.append( _get("s_rand"))
+                _all_s_unc.append(  _get("s_unc"))
+                _all_s_real.append( _get("s_real"))
 
-        grid_active = analyse_params.get("algorithm", getattr(self, "_simulate_params", {}).get("algorithm", "ce")) != "ce"
-        if grid_active:
-            batch_grid, _ = model.utils.compute_and_save_aggregate_grid(analysis_folder)
-            moran_i_dict  = model.utils.compute_moran_i(batch_grid)
-            moran_df      = pd.DataFrame([{"metric": k, "value": v} for k, v in moran_i_dict.items()])
-            batch_stats_df = pd.concat([batch_stats_df, moran_df], ignore_index=True)
+            bsdf = pd.DataFrame([
+                {"metric": "gini_collective",      "value": gini_coll},
+                {"metric": "gini_individual",      "value": gini_ind},
+                {"metric": "n_users",              "value": float(total)},
+                {"metric": "mean_rg",              "value": float(np.nanmean(_all_rg))},
+                {"metric": "mean_2rg",             "value": float(np.nanmean(_all_2rg))},
+                {"metric": "mean_travel_distance", "value": float(np.nanmean(_all_md))},
+                {"metric": "mean_num_venues",      "value": float(np.nanmean(_all_nv))},
+                {"metric": "mean_s_rand",          "value": float(np.nanmean(_all_s_rand))},
+                {"metric": "mean_s_unc",           "value": float(np.nanmean(_all_s_unc))},
+                {"metric": "mean_s_real",          "value": float(np.nanmean(_all_s_real))},
+            ])
 
-        batch_stats_df.to_parquet(
-            os.path.join(analysis_folder, "batch_stats.parquet"), index=False
-        )
+            grid_active = analyse_params.get("algorithm", getattr(self, "_simulate_params", {}).get("algorithm", "ce")) != "ce"
+            if grid_active:
+                batch_grid, _ = model.utils.compute_and_save_aggregate_grid(target_folder)
+                moran_i_dict  = model.utils.compute_moran_i(batch_grid)
+                moran_df      = pd.DataFrame([{"metric": k, "value": v} for k, v in moran_i_dict.items()])
+                bsdf = pd.concat([bsdf, moran_df], ignore_index=True)
 
-        logger.info(f"Analysis data saved to: {analysis_folder}")
+            bsdf.to_parquet(os.path.join(target_folder, "batch_stats.parquet"), index=False)
+            logger.info(f"Analysis data saved to: {target_folder}")
+
+        if combined:
+            # mixed: full DataFrames
+            _compute_and_save_batch_stats(analysis_folder_mixed, user_history_df_list, venue_history_df_list)
+            # pure: rebuild trimmed lists from the saved parquets (already on disk)
+            pure_uhdf_list = []
+            pure_vhdf_list = []
+            for j in range(total):
+                pure_uhdf_list.append(
+                    pd.read_parquet(os.path.join(analysis_folder_pure, f"user_{j}_history.parquet")))
+                pure_vhdf_list.append(
+                    pd.read_parquet(os.path.join(analysis_folder_pure, f"user_{j}_venue.parquet")))
+            _compute_and_save_batch_stats(analysis_folder_pure, pure_uhdf_list, pure_vhdf_list)
+            # The batch run folder returned to the caller is the parent timestamp folder
+            analysis_folder = batch_run_folder
+        else:
+            _compute_and_save_batch_stats(analysis_folder, user_history_df_list, venue_history_df_list)
 
         for folder in raw_folders_to_lock:
             lock_path = os.path.join(folder, "_analyzed.lock")
@@ -1087,6 +1138,13 @@ class Simulation:
         filters = {**plot_params}
         if grid_active and grid_params:
             filters.update(grid_params)
+
+        # Resolve variant ("p" → "pure", "m" → "mixed", default "mixed").
+        # Only meaningful in combined (cp/mp) mode; ignored in plain p mode.
+        _variant_raw = plot_params.get("variant", "m")
+        variant = "pure" if _variant_raw == "p" else "mixed"
+        if combined:
+            filters["variant"] = variant
 
         # gamma needed by freq_distribution plot
         self.gamma = plot_params.get("gamma")
