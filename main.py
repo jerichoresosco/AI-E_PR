@@ -18,7 +18,7 @@ def main():
     # Choose mode
     # ==========================================================
 
-    mode = "mp"  # Options (short aliases):
+    mode = "cp"  # Options (short aliases):
                         #   "s"     run simulation, save raw_data only
                         #   "a"    - load raw_data, compute & save analysis_data
                         #   "sa"   - simulate then analyse without reloading from disk
@@ -45,6 +45,7 @@ def main():
                                          # "uk" = User-KNN CF
                                          # "ik" = Item-KNN CF
                                          # "mf" = Matrix Factorization CF
+                                         # "ba" = Barabási-Albert popularity CF
         "top_k": 10,                     # neighbors used in CF algorithms (uk/ik/mf)
     }
 
@@ -127,7 +128,7 @@ def main():
         "a_param": 0.75,
         "b_param": 0.6,
         "time": 20000,            # absolute target: users will run until clock=time
-        "algorithm": "ge",        # algorithm for the resume phase
+        "algorithm": "ba",        # algorithm for the resume phase
         "top_k": 30,              # neighbors used when algorithm is uk/ik/mf
     }
 
@@ -152,7 +153,7 @@ def main():
         "user_number": 5,
         "starting_position": "random",
         "algorithm_0": "ge",   # load_params["algorithm"]
-        "algorithm_1": "mf",   # resume_params["algorithm"]
+        "algorithm_1": "ba",   # resume_params["algorithm"]
         "combined": True,       # tells load_analysis_data() to use combined loaders
         "variant": "m",        # "p" = pure (resumed phase only), "m" = mixed (full)
     }
@@ -207,7 +208,7 @@ def main():
         "s_over_time", #mp
         "rg_over_time", #mp
         #"aggregate_grid",   
-        #"batch_grid",  ##Problems in saving due to max lenght titole 260 characters
+        "batch_grid",  ##Problems in saving due to max lenght titole 260 characters
         "batch_stats", #mp
         "srand", #mp     
         "sunc", #mp      

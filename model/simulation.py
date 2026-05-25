@@ -130,15 +130,13 @@ class Simulation:
         starting_position = simulate_params["starting_position"]
         top_k        = simulate_params.get("top_k", 10)
 
-        _VALID_ALGORITHMS = ("ce", "ge", "uk", "ik", "mf")
+        _VALID_ALGORITHMS = ("ce", "ge", "uk", "ik", "mf", "ba")
         if algorithm not in _VALID_ALGORITHMS:
             raise ValueError(
                 f"run(): unknown algorithm '{algorithm}'. "
                 f"Must be one of: {_VALID_ALGORITHMS}"
             )
 
-        # CF algorithms require pre-existing trajectory data and must be
-        # launched via resume() after _reconstruct_users_from_raw().
         if algorithm not in ("ce", "ge"):
             raise ValueError(
                 f"run(): algorithm='{algorithm}' is a CF algorithm and cannot be used "
@@ -249,7 +247,7 @@ class Simulation:
         the users already carry (i.e. the end-time of the previous run phase).
 
         The algorithm is taken from simulate_params["algorithm"] and must be
-        one of: "ce", "ge", "uk", "ik", "mf".
+        one of: "ce", "ge", "uk", "ik", "mf", "ba".
 
         Parameters
         ----------
@@ -1173,6 +1171,7 @@ class Simulation:
         # _plot_grid_params excludes user_number (irrelevant for grid/aggregate plots).
         self._plot_params = {**filters, "user_number": len(loaded)}
         self._plot_grid_params = {k: v for k, v in filters.items() if k != "user_number"}
+        self._grid_active = grid_active  # saved for use in plot()
 
         for entry in loaded:
             stats_df         = entry.get("stats")
@@ -1306,7 +1305,7 @@ class Simulation:
                 model.utils_plot.plot_aggregate_grid(
                     self.aggregate_grid, filters=pg_with_n,
                     title=model.utils_plot.build_plot_title("Aggregate Grid", pg_with_n),
-                    mask_center= p["grid"] and p.get("starting_position", "centered") == "centered",
+                    mask_center= self._grid_active and p.get("starting_position", "centered") == "centered",
                     show=self._show
                 )
             else:
@@ -1319,7 +1318,7 @@ class Simulation:
                         grid, filters=pg_with_n,
                         title=model.utils_plot.build_plot_title(f"Grid - {batch_id}", pg_with_n),
                         batch_id=batch_id,
-                        mask_center= p["grid"] and p.get("starting_position", "centered") == "centered",
+                        mask_center= self._grid_active and p.get("starting_position", "centered") == "centered",
                         show=self._show
                     )
             else:
