@@ -807,8 +807,6 @@ def load_analysis_parquet(filters=None, needed_files=None):
 
     full_file_map = {
         "stats":         "_stats.parquet",
-        "rg_over_time":  "_rg_over_time.parquet",
-        "s_over_time":   "_s_over_time.parquet",
         "venue_history": "_venue.parquet",
         "user_history":  "_history.parquet",
     }
@@ -1162,8 +1160,6 @@ def load_combined_analysis_parquet(filters=None, needed_files=None):
 
     full_file_map = {
         "stats":         "_stats.parquet",
-        "rg_over_time":  "_rg_over_time.parquet",
-        "s_over_time":   "_s_over_time.parquet",
         "venue_history": "_venue.parquet",
         "user_history":  "_history.parquet",
     }

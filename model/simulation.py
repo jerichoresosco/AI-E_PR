@@ -782,11 +782,11 @@ class Simulation:
 
         Files saved per user
         --------------------
-        user_{i}_history.parquet      : full user trajectory (copy from raw)
+        user_{i}_history.parquet      : full user trajectory with added columns:
+                                        'rg'  — radius of gyration at each step
+                                        's'   — cumulative distinct venues (exploration rows only)
         user_{i}_venue.parquet        : venue visit counts   (copy from raw)
         user_{i}_stats.parquet        : rg, rg_two, x_cm, y_cm
-        user_{i}_rg_over_time.parquet : clock vs rg(t) series
-        user_{i}_s_over_time.parquet  : clock vs S(t) series
 
         Parameters
         ----------
@@ -956,16 +956,25 @@ class Simulation:
                 ])
                 stats_df = pd.concat([stats_df, extra_rows], ignore_index=True)
 
+                # Merge rg_over_time and s_over_time into user_history as extra columns.
+                # rg_over_time has one row per step (same index as uh); s_over_time has
+                # one row per exploration event only (rows where State(E/R) == "E").
+                # We align both on the Clock value so NaN fills non-exploration rows for 's'.
+                uh = uh.copy()
+                # rg column: one value per history row (same length as uh)
+                uh["rg"] = rg_over_time_df["rg"].values
+
+                # s column: only present for exploration rows — merge on clock, then
+                # forward-fill so return rows carry the last known s value instead of NaN
+                s_map = dict(zip(s_over_time_df["clock"].values, s_over_time_df["s"].values))
+                uh["s"] = uh["Clock"].map(s_map).ffill()
+
                 uh.to_parquet(
                     os.path.join(_folder, f"user_{i}_history.parquet"),      index=False)
                 vh.to_parquet(
                     os.path.join(_folder, f"user_{i}_venue.parquet"),        index=False)
                 stats_df.to_parquet(
                     os.path.join(_folder, f"user_{i}_stats.parquet"),        index=False)
-                rg_over_time_df.to_parquet(
-                    os.path.join(_folder, f"user_{i}_rg_over_time.parquet"), index=False)
-                s_over_time_df.to_parquet(
-                    os.path.join(_folder, f"user_{i}_s_over_time.parquet"),  index=False)
 
                 if grid_df is not None:
                     grid_df.to_parquet(
@@ -1085,8 +1094,8 @@ class Simulation:
             "dist_distribution":  {"user_history"},
             "freq_distribution":  {"venue_history"},
             "two_radius":         {"stats"},
-            "s_over_time":        {"s_over_time"},
-            "rg_over_time":       {"rg_over_time"},
+            "s_over_time":        {"user_history"},
+            "rg_over_time":       {"user_history"},
             "aggregate_grid":     set(),
             "batch_grid":         set(),
             "batch_stats":        set(),
@@ -1176,9 +1185,17 @@ class Simulation:
         for entry in loaded:
             stats_df         = entry.get("stats")
             venue_history_df = entry.get("venue_history")
-            rg_over_time_df  = entry.get("rg_over_time")
-            s_over_time_df   = entry.get("s_over_time")
             user_history_df  = entry.get("user_history")
+
+            rg_over_time_df = None
+            s_over_time_df  = None
+            if user_history_df is not None:
+                if "rg" in user_history_df.columns:
+                    rg_over_time_df = user_history_df[["Clock", "rg"]].rename(
+                        columns={"Clock": "clock"})
+                if "s" in user_history_df.columns:
+                    s_rows = user_history_df[["Clock", "s"]].dropna(subset=["s"])
+                    s_over_time_df = s_rows.rename(columns={"Clock": "clock"})
 
             self.last_user_history  = user_history_df
             self.last_venue_history = venue_history_df

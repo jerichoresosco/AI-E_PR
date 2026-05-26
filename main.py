@@ -18,7 +18,7 @@ def main():
     # Choose mode
     # ==========================================================
 
-    mode = "cp"  # Options (short aliases):
+    mode = "mp"  # Options (short aliases):
                         #   "s"     run simulation, save raw_data only
                         #   "a"    - load raw_data, compute & save analysis_data
                         #   "sa"   - simulate then analyse without reloading from disk
@@ -37,8 +37,8 @@ def main():
         "gamma": 0.2,
         "a_param": 0.75,
         "b_param": 0.6,
-        "user_number": 5,
-        "time": 10000,
+        "user_number": 1000,
+        "time": 30000,
         "starting_position": "random",   # "centered" | "random" | "normal"
         "algorithm": "ge",               # "ce" = classic EPR (no grid)
                                          # "ge" = grid EPR
@@ -184,19 +184,19 @@ def main():
     #   }
     # ----------------------------------------------------------
     multiple_plot_params = {
-        "label":          ["EPR mf", "EPR ik", "EPR uk", "EPR ge"],
+        "label":          ["EPR mf", "EPR ik", "EPR uk", "EPR ge", "EPR ba"],
         "ro": 0.1,
         "gamma": 0.2,
         "a_param": 0.75,
         "b_param": 0.6,
-        "t0": 10000,
-        "t1": 20000,
-        "user_number": 5,
+        "t0": 30000,
+        "t1": 230000,
+        "user_number": 1000,
         "starting_position": "random",
         "algorithm_0": "ge",
-        "algorithm_1": ["mf", "ik", "uk", "ge"],
+        "algorithm_1": ["mf", "ik", "uk", "ge", "ba"],
         "combined": True,
-        "variant": "p",
+        "variant": "m",
     }
 
     plot_list = [
