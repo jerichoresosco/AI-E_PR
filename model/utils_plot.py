@@ -273,7 +273,7 @@ def plot_rg_distribution(rg_list, filters=None, title=None, show=False, series_l
             continue
         centers, density = dotted_histogram(arr, bins_per_decade=16)
         kw = {"color": _MP_COLORS[idx % len(_MP_COLORS)]} if multi else {}
-        ax.loglog(centers, density, "o", markersize=5, label=label if multi else None, **kw)
+        ax.loglog(centers, density, "o-", markersize=5, label=label if multi else None, **kw)
 
     ax.set_xlabel("Radius of gyration")
     ax.set_ylabel("Density")
@@ -324,7 +324,7 @@ def plot_dist_distribution(mean_dist_list, filters=None, title=None, show=False,
             continue
         centers, density = dotted_histogram(arr, bins_per_decade=8)
         kw = {"color": _MP_COLORS[idx % len(_MP_COLORS)]} if multi else {}
-        ax.loglog(centers, density, "o", markersize=5, label=label if multi else None, **kw)
+        ax.loglog(centers, density, "o-", markersize=5, label=label if multi else None, **kw)
 
     ax.set_xlabel(r"Travel distance $\Delta r$")
     ax.set_ylabel("Density")
@@ -373,7 +373,7 @@ def plot_frequency_distribution(venue_history_list, gamma, filters=None, title=N
     avg_visits = np.array([np.mean(rank_visits[r]) for r in ranks])
 
     plt.figure(figsize=(8, 6))
-    plt.scatter(ranks, avg_visits, color='blue', label='avg data', s=50)
+    plt.plot(ranks, avg_visits, "o-", color='blue', label='avg data', markersize=6)
 
     x_fit = np.linspace(ranks.min(), ranks.max(), 100)
     y_fit = x_fit ** (-1 - gamma)
@@ -491,10 +491,9 @@ def plot_S_over_time_from_df(s_over_time_list, filters=None, title=None, bins_pe
         sample_t_plot = [t for t in sample_times if pct_by_time[t]]
         avg_pct_plot  = [np.mean(pct_by_time[t]) for t in sample_t_plot]
 
-        kw = {"color": _MP_COLORS[idx % len(_MP_COLORS)], "s": 25} if multi else {"s": None}
-        ax.scatter(sample_t_plot, avg_pct_plot, marker='o',
-                   label=label if multi else None,
-                   **({k: v for k, v in kw.items() if v is not None}))
+        kw = {"color": _MP_COLORS[idx % len(_MP_COLORS)]} if multi else {}
+        ax.plot(sample_t_plot, avg_pct_plot, "o-", markersize=5,
+                label=label if multi else None, **kw)
 
     ax.set_xscale("log")
     ax.set_yscale("log")
@@ -573,9 +572,9 @@ def plot_r_gyr_over_time_from_df(rg_over_time_list, filters=None, title=None, bi
         sample_t_plot = [t for t in sample_times if pct_by_time[t]]
         avg_pct_plot  = [np.mean(pct_by_time[t]) for t in sample_t_plot]
 
-        kw = {"color": _MP_COLORS[idx % len(_MP_COLORS)], "s": 25} if multi else {}
-        ax.scatter(sample_t_plot, avg_pct_plot, marker='o',
-                   label=label if multi else None, **kw)
+        kw = {"color": _MP_COLORS[idx % len(_MP_COLORS)]} if multi else {}
+        ax.plot(sample_t_plot, avg_pct_plot, "o-", markersize=5,
+                label=label if multi else None, **kw)
 
     ax.set_xlabel("Clock")
     ax.set_xscale("log")
