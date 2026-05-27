@@ -49,3 +49,19 @@ class Grid:
         cell_x, cell_y = self._position_to_cell_coords(position)
         if 0 <= cell_x < self.cell_number and 0 <= cell_y < self.cell_number:
             self.matrix[cell_x, cell_y] += 1
+
+    def cell_coords_to_centroid(self, cell_x, cell_y):
+        cx = (cell_x + 0.5) * self.cell_lenght - self.spatial_center
+        cy = (cell_y + 0.5) * self.cell_lenght - self.spatial_center
+        return (cx, cy)
+
+    @staticmethod
+    def snap_to_centroid_static(position, cell_lenght, cell_number):
+        spatial_center = (cell_lenght * cell_number) / 2
+        cell_x = int((position[0] + spatial_center) // cell_lenght)
+        cell_y = int((position[1] + spatial_center) // cell_lenght)
+        cell_x = max(0, min(cell_x, cell_number - 1))
+        cell_y = max(0, min(cell_y, cell_number - 1))
+        cx = (cell_x + 0.5) * cell_lenght - spatial_center
+        cy = (cell_y + 0.5) * cell_lenght - spatial_center
+        return (cx, cy)

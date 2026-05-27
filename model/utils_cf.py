@@ -36,8 +36,11 @@ def make_decision_cf(user, neighbors, cf_type, weight_by_similarity=True):
         elif cf_type == "mf":
             if not _venue_list_exploring(user, neighbors, cf_label="MF"):
                 user.exploring()           # EPR fallback
+        elif cf_type == "ba":
+            if not _ba_exploring(user, neighbors):
+                user.exploring()           # EPR fallback
         else:
-            raise ValueError(f"Unknown cf_type '{cf_type}'. Expected 'uk', 'ik', or 'mf'.")
+            raise ValueError(f"Unknown cf_type '{cf_type}'. Expected 'uk', 'ik', 'mf', or 'ba'.")
 
     _advance_clock(user)
 
@@ -73,8 +76,11 @@ def build_cf_data(users_list, top_k, cf_type,
     elif cf_type == "mf":
         return _build_mf_data(users_list, top_k, simulate_params,
                               grid_exists, grid_params, check_run_dir, interval_idx)
+    elif cf_type == "ba":
+        return _build_ba_data(users_list, simulate_params,
+                              grid_exists, grid_params, check_run_dir, interval_idx)
     else:
-        raise ValueError(f"Unknown cf_type '{cf_type}'. Expected 'uk', 'ik', or 'mf'.")
+        raise ValueError(f"Unknown cf_type '{cf_type}'. Expected 'uk', 'ik', 'mf', or 'ba'.")
 
 
 # =============================================================================
@@ -623,8 +629,141 @@ def _build_mf_data(users_list, top_k, simulate_params,
 
 
 # =============================================================================
-# SHARED CLOCK ADVANCE (identical for all CF types)
+# BARABASI-ALBERT  (cf_type = "ba")
 # =============================================================================
+
+
+def _build_ba_data(users_list, simulate_params,
+                   grid_exists, grid_params, check_run_dir, interval_idx):
+    """
+    Build Barabási-Albert popularity weights for exploration.
+
+    For each venue (cell) known across all users, count how many *distinct*
+    users have visited it at least once.  Normalise to obtain a probability
+    vector.  This vector is the same for all users; individual filtering of
+    already-visited venues happens at exploration time inside _ba_exploring().
+
+    Parameters
+    ----------
+    users_list      : list of User
+    simulate_params : dict  - used only for folder naming
+    grid_exists     : bool
+    grid_params     : dict | None
+    check_run_dir   : str | None
+    interval_idx    : int
+
+    Returns
+    -------
+    cf_neighbors  : list of dict  - one entry per user, all pointing to the same
+                    ba_data dict {venue_name: (x, y, raw_count, probability)}.
+                    Wrapped in a list to match the interface expected by resume().
+    check_run_dir : str
+    """
+    # ------------------------------------------------------------------
+    # Count distinct users per venue
+    # ------------------------------------------------------------------
+    venue_user_count = {}   # venue_name -> set of user indices that visited it
+    venue_meta       = {}   # venue_name -> (x, y)
+
+    for ui, user in enumerate(users_list):
+        for row in user.venue_history[1:]:
+            vname = row[0]
+            if vname not in venue_user_count:
+                venue_user_count[vname] = set()
+                venue_meta[vname]       = (row[2], row[3])
+            venue_user_count[vname].add(ui)
+
+    if not venue_user_count:
+        # No data yet — return empty structure; _ba_exploring will fall back to EPR
+        return [{} for _ in users_list], check_run_dir
+
+    # ------------------------------------------------------------------
+    # Build raw counts and normalise
+    # ------------------------------------------------------------------
+    venues      = list(venue_user_count.keys())
+    raw_counts  = np.array([len(venue_user_count[v]) for v in venues], dtype=float)
+    total       = raw_counts.sum()
+    probs       = raw_counts / total
+
+    ba_data = {
+        v: (venue_meta[v][0], venue_meta[v][1], int(raw_counts[i]), float(probs[i]))
+        for i, v in enumerate(venues)
+    }
+
+    # ------------------------------------------------------------------
+    # Resolve check folder and persist for diagnostics
+    # ------------------------------------------------------------------
+    check_run_dir  = _resolve_check_run_dir(
+        check_run_dir, "ba", simulate_params, grid_exists, grid_params
+    )
+    interval_label = interval_idx + 1
+
+    popularity_path = os.path.join(
+        check_run_dir, f"ba_popularity_interval_{interval_label:02d}.txt"
+    )
+    with open(popularity_path, "w") as f:
+        f.write("venue_name,x,y,distinct_users,probability\n")
+        for v, (x, y, cnt, p) in ba_data.items():
+            f.write(f"{v},{x},{y},{cnt},{p:.8f}\n")
+
+    n_venues = len(venues)
+    n_users  = len(users_list)
+    logger.info(
+        f"BA data built: {n_users} users, {n_venues} unique venues, "
+        f"interval={interval_label}"
+    )
+    # ba_data is the same for every user; wrap it in a list so that
+    # resume() can index it as cf_neighbors[i], consistent with uk/ik/mf.
+    cf_neighbors = [ba_data] * n_users
+    return cf_neighbors, check_run_dir
+
+
+def _ba_exploring(user, ba_data):
+    """
+    Barabási-Albert exploration step.
+
+    Sample an unvisited venue proportionally to its global popularity
+    (number of distinct users who have visited it).  Venues already
+    visited by *this* user are excluded and the remaining probabilities
+    are re-normalised before sampling.
+
+    Returns False to trigger EPR fallback when no unvisited venues remain
+    in ba_data (e.g. on the very first interval when data is sparse).
+
+    On success sets: state="E", num_distinct_venues, next_position,
+    destination, _venue_index entry, delta_r, angle=None.
+    """
+    if not ba_data:
+        logger.warning(f"User {user.uid}: BA exploration skipped - no popularity data.")
+        return False
+
+    my_venues = set(user._venue_index.keys())
+
+    # Filter to unvisited venues only
+    candidates = [(v, x, y, p) for v, (x, y, cnt, p) in ba_data.items()
+                  if v not in my_venues]
+
+    if not candidates:
+        logger.warning(
+            f"User {user.uid}: BA exploration - EPR fallback "
+            "(all known venues already visited)."
+        )
+        return False
+
+    names  = [c[0] for c in candidates]
+    xs     = [c[1] for c in candidates]
+    ys     = [c[2] for c in candidates]
+    raw_p  = np.array([c[3] for c in candidates], dtype=float)
+    probs  = raw_p / raw_p.sum()   # re-normalise after filtering
+
+    chosen_idx = np.random.choice(len(names), p=probs)
+    chosen = [names[chosen_idx], 1, xs[chosen_idx], ys[chosen_idx]]
+
+    _set_user_exploration_state(user, chosen)
+    return True
+
+
+
 
 def _advance_clock(user):
     """Sample delta_t, advance position and clock, update histories and grid."""

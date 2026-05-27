@@ -140,6 +140,16 @@ class User:
         # Resolve starting position: use provided value or default to origin
         _start = initial_position if initial_position is not None else (0, 0)
 
+        # When the grid is active, snap the starting position to the centroid of
+        # the corresponding cell so that all users share the same discrete venues
+        # from the very first step.
+        if grid is not False:
+            _start = model.grid.Grid.snap_to_centroid_static(
+                _start,
+                simulation.grid_cell_lenght,
+                simulation.grid_cell_number,
+            )
+
         self.has_grid = (grid is not False)
         if self.has_grid:
             self.grid = model.grid.Grid(
@@ -321,7 +331,10 @@ class User:
         Generates a new exploration destination using spatial power-law sampling.
 
         If a grid is active (has_grid=True), samples candidate positions until one
-        falls in an unvisited cell, then marks that cell as visited.
+        falls in an unvisited cell. The actual destination is then snapped to the
+        centroid of that cell, and delta_r and angle are recomputed accordingly so
+        that they remain consistent with the snapped position. The angle is always
+        returned in [0, 2*pi].
         If no grid is active, a single sample is drawn unconditionally.
 
         Returns
@@ -337,6 +350,15 @@ class User:
                 next_position = model.utils.polar_to_cartesian(self.delta_r, self.angle, position=self.position)
                 cell_value = self.grid.get_cell_value_given_position(next_position)
                 if cell_value is not False and cell_value == 0:
+                    # Snap to the centroid of the selected cell so that all users
+                    # share the same discrete set of venues.
+                    cell_x, cell_y = self.grid._position_to_cell_coords(next_position)
+                    next_position = self.grid.cell_coords_to_centroid(cell_x, cell_y)
+                    # Recompute delta_r and angle to be consistent with the centroid.
+                    dx = next_position[0] - self.position[0]
+                    dy = next_position[1] - self.position[1]
+                    self.delta_r = np.sqrt(dx**2 + dy**2)
+                    self.angle = np.arctan2(dy, dx) % (2 * np.pi)
                     break
                 saturation += 1
                 if saturation > 100000:
@@ -382,4 +404,3 @@ class User:
             self.venue_history[self._row_index][self.venue_history[0].index("Number of visits")] += 1
             self.user_history.append([self.state, self.departure, *self.previous_position,
                                     self.destination, *self.position, self.delta_r, self.angle, self.delta_t, self.clock])
-
