@@ -45,7 +45,9 @@ def main():
                                          # "uk" = User-KNN CF
                                          # "ik" = Item-KNN CF
                                          # "mf" = Matrix Factorization CF
-                                         # "ba" = Barabási-Albert popularity CF
+                                         # "ba" = Barabási-Albert exploration-popularity CF 
+                                         # "bc" = Barabási-Albert visit-popularity CF
+                                         # "ra" = Random recommender
         "top_k": 10,                     # neighbors used in CF algorithms (uk/ik/mf)
     }
 
@@ -148,12 +150,12 @@ def main():
         "gamma": 0.2,
         "a_param": 0.75,
         "b_param": 0.6,
-        "t0": 10000,           # load_params["time"]
-        "t1": 20000,           # resume_params["time"]
-        "user_number": 5,
+        "t0": 30000,           # load_params["time"]
+        "t1": 230000,           # resume_params["time"]
+        "user_number": 1000,
         "starting_position": "random",
         "algorithm_0": "ge",   # load_params["algorithm"]
-        "algorithm_1": "ba",   # resume_params["algorithm"]
+        "algorithm_1": "mf",   # resume_params["algorithm"]
         "combined": True,       # tells load_analysis_data() to use combined loaders
         "variant": "m",        # "p" = pure (resumed phase only), "m" = mixed (full)
     }
@@ -201,19 +203,21 @@ def main():
 
     plot_list = [
         #"mobility",
-        "rg_distribution", #checked but still double plot   #mp
-        "dist_distribution", #mp
-        "freq_distribution", #mp
-        "two_radius", #mp
-        "s_over_time", #mp
-        "rg_over_time", #mp
+        #"rg_distribution", #checked but still double plot   #mp
+        #"dist_distribution", #mp
+        #"freq_distribution", #mp
+        #"two_radius", #mp
+        #"s_over_time", #mp
+        #"rg_over_time", #mp
         #"aggregate_grid",   
-        "batch_grid",  ##Problems in saving due to max lenght titole 260 characters
-        "batch_stats", #mp
-        "srand", #mp     
-        "sunc", #mp      
-        "sreal", #mp     
-        "s_triple",   
+        #"batch_grid",  ##Problems in saving due to max lenght titole 260 characters
+        #"batch_stats", #mp
+        #"srand", #mp     
+        #"sunc", #mp      
+        #"sreal", #mp     
+        #"s_triple",   
+        "venue_visits",
+        "venue_popularity",
     ]
 
     show = True #if True only shows the plots, if False only saves them to disk

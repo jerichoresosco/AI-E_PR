@@ -104,9 +104,9 @@ class Simulation:
         """
         Run the EPR mobility simulation from scratch and store results in self.users_list.
 
-        Only EPR algorithms are accepted here. CF algorithms ("uk", "ik", "mf")
-        require pre-existing trajectory data and must be launched via resume()
-        after _reconstruct_users_from_raw().
+        Only EPR algorithms are accepted here. CF algorithms ("uk", "ik", "mf",
+        "ba", "bv", "ra") require pre-existing trajectory data and must be launched
+        via resume() after _reconstruct_users_from_raw().
 
         Parameters
         ----------
@@ -115,7 +115,7 @@ class Simulation:
             Must contain: "algorithm" -- one of:
               "ce"  : classic EPR (no grid)
               "ge"  : grid EPR
-            CF algorithms ("uk", "ik", "mf") raise ValueError here.
+            CF algorithms ("uk", "ik", "mf", "ba", "bv", "ra") raise ValueError here.
         grid_params : dict, optional
             Required when algorithm is "ge". Must contain "cell_lenght" and
             "cell_number".
@@ -130,7 +130,7 @@ class Simulation:
         starting_position = simulate_params["starting_position"]
         top_k        = simulate_params.get("top_k", 10)
 
-        _VALID_ALGORITHMS = ("ce", "ge", "uk", "ik", "mf", "ba")
+        _VALID_ALGORITHMS = ("ce", "ge", "uk", "ik", "mf", "ba", "bv", "ra")
         if algorithm not in _VALID_ALGORITHMS:
             raise ValueError(
                 f"run(): unknown algorithm '{algorithm}'. "
@@ -247,7 +247,7 @@ class Simulation:
         the users already carry (i.e. the end-time of the previous run phase).
 
         The algorithm is taken from simulate_params["algorithm"] and must be
-        one of: "ce", "ge", "uk", "ik", "mf", "ba".
+        one of: "ce", "ge", "uk", "ik", "mf", "ba", "bv", "ra".
 
         Parameters
         ----------
@@ -1103,6 +1103,8 @@ class Simulation:
             "sunc":               {"stats"},
             "sreal":              {"stats"},
             "s_triple":           {"stats"},
+            "venue_visits":       {"venue_history"},
+            "venue_popularity":   {"venue_history"},
         }
 
         if plot_list is not None:
@@ -1374,6 +1376,18 @@ class Simulation:
                 filters=p, title=model.utils_plot.build_plot_title("Entropy Distributions", p),
                 show=self._show,
             )
+        if "venue_visits" in plot_list:
+            model.utils_plot.plot_venue_ranking(
+                self.venue_history_list, mode="visits",
+                filters=p, title=model.utils_plot.build_plot_title("Venue Visits Ranking", p),
+                show=self._show,
+            )
+        if "venue_popularity" in plot_list:
+            model.utils_plot.plot_venue_ranking(
+                self.venue_history_list, mode="popularity",
+                filters=p, title=model.utils_plot.build_plot_title("Venue Popularity Ranking", p),
+                show=self._show,
+            )
 
     # ==========================================================================
     # MULTIPLEPLOT  ("mp" mode)
@@ -1463,17 +1477,18 @@ class Simulation:
             tmp.load_analysis_data(p_dict, grid_params=grid_params, plot_list=plot_list)
 
             series = {
-                "label":            label,
-                "rg_list":          list(tmp.rg_list),
-                "two_rg_list":      list(tmp.two_rg_list),
-                "mean_dist_list":   list(tmp.mean_dist_list),
-                "all_rg_over_time": list(tmp.all_rg_over_time),
-                "all_s_over_time":  list(tmp.all_s_over_time),
-                "batch_stats_list": list(tmp.batch_stats_list),
-                "_plot_params":     dict(tmp._plot_params),
-                "s_rand_list":      list(tmp.s_rand_list),
-                "s_unc_list":       list(tmp.s_unc_list),
-                "s_real_list":      list(tmp.s_real_list),
+                "label":               label,
+                "rg_list":             list(tmp.rg_list),
+                "two_rg_list":         list(tmp.two_rg_list),
+                "mean_dist_list":      list(tmp.mean_dist_list),
+                "all_rg_over_time":    list(tmp.all_rg_over_time),
+                "all_s_over_time":     list(tmp.all_s_over_time),
+                "batch_stats_list":    list(tmp.batch_stats_list),
+                "_plot_params":        dict(tmp._plot_params),
+                "s_rand_list":         list(tmp.s_rand_list),
+                "s_unc_list":          list(tmp.s_unc_list),
+                "s_real_list":         list(tmp.s_real_list),
+                "venue_history_list":  list(tmp.venue_history_list),
             }
             self._mp_series.append(series)
             logger.info(
@@ -1590,6 +1605,24 @@ class Simulation:
                 series_list=[(s["label"], s["s_real_list"]) for s in self._mp_series],
                 filters=first_p,
                 title=model.utils_plot.build_plot_title("S^real Distribution (multi)", first_p),
+                show=show,
+            )
+
+        if "venue_visits" in plot_list:
+            model.utils_plot.plot_venue_ranking(
+                venue_history_list=None, mode="visits",
+                series_list=[(s["label"], s["venue_history_list"]) for s in self._mp_series],
+                filters=first_p,
+                title=model.utils_plot.build_plot_title("Venue Visits Ranking (multi)", first_p),
+                show=show,
+            )
+
+        if "venue_popularity" in plot_list:
+            model.utils_plot.plot_venue_ranking(
+                venue_history_list=None, mode="popularity",
+                series_list=[(s["label"], s["venue_history_list"]) for s in self._mp_series],
+                filters=first_p,
+                title=model.utils_plot.build_plot_title("Venue Popularity Ranking (multi)", first_p),
                 show=show,
             )
 
