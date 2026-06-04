@@ -13,6 +13,35 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+class _VenueSnapshot:
+    """
+    Lightweight proxy that exposes a frozen copy of a single user's
+    venue_history to build_cf_data().
+
+    build_cf_data() (and _build_uv_matrix inside it) only reads
+    user.venue_history — it never touches user_history, grid, clock, or
+    any other User attribute.  Passing a _VenueSnapshot instead of the
+    live User object guarantees that every user in a CF interval is
+    evaluated against the same temporal baseline: the state of
+    venue_history at the *start* of that interval, before any user has
+    been advanced.  This removes the ordering asymmetry that would
+    otherwise arise from simulating users sequentially.
+
+    Parameters
+    ----------
+    venue_history : list
+        The live user.venue_history at the moment the snapshot is taken.
+        A shallow copy of the outer list is stored; individual rows are
+        not copied because build_cf_data only reads them.
+    """
+    __slots__ = ("venue_history",)
+
+    def __init__(self, venue_history):
+        # Shallow-copy the list so that rows appended during simulation
+        # of this interval do not appear in the frozen view.
+        self.venue_history = list(venue_history)
+
+
 class Simulation:
     """
     three-phase mobility simulation pipeline:
@@ -224,18 +253,80 @@ class Simulation:
                 pct = ((i + 1) / user_number) * 100
                 logger.info(f"EPR progress: {pct:.0f}% ({i+1}/{user_number} users)")
 
+        # ---------------------------------------------------------------
+        # Post-run: replace users with empty user_history
+        # ---------------------------------------------------------------
+        replacement_uid = user_number
+        users_replaced = 0
+        valid_users = []
+
+        for user in self.users_list:
+            if len(user.user_history) > 1:
+                valid_users.append(user)
+            else:
+                logger.warning(
+                    f"{user.uid}: user_history is empty — discarding and replacing."
+                )
+                while True:
+                    if self._starting_position == "random":
+                        sc = self._spatial_center
+                        init_pos = (
+                            np.random.uniform(-sc, sc),
+                            np.random.uniform(-sc, sc),
+                        )
+                    elif self._starting_position == "normal":
+                        sc = self._spatial_center
+                        sigma = sc / 3
+                        def _sample(sc=sc, sigma=sigma):
+                            while True:
+                                v = np.random.normal(0, sigma)
+                                if -sc <= v <= sc:
+                                    return float(v)
+                        init_pos = (_sample(), _sample())
+                    else:
+                        init_pos = None
+
+                    replacement = model.user.User(
+                        uid=f"User_{replacement_uid}",
+                        a_param=a_param,
+                        b_param=b_param,
+                        grid=grid_exists,
+                        simulation=self,
+                        initial_position=init_pos,
+                    )
+                    while replacement.clock < time:
+                        replacement.make_decision()
+
+                    replacement_uid += 1
+
+                    if len(replacement.user_history) > 1:
+                        valid_users.append(replacement)
+                        users_replaced += 1
+                        break
+                    else:
+                        logger.warning(
+                            f"User_{replacement_uid - 1}: replacement also empty, retrying..."
+                        )
+
+        self.users_list = valid_users
+
+        if users_replaced > 0:
+            logger.info(
+                f"Replaced {users_replaced} empty user(s) with valid replacements."
+            )
+
         #TO BE SOLVED!!! Here we are trying to remove what is generated past the limit time, that is the last step for each user,
         #but this solution is not working properly, because what is updated in make_decision and make_decision_cf are user_history,
         #venue_history and grid.matrix, so we need to find a way to remove the last step from all of them. We are correctly removing user_history,
         #partially venue history and the grid is not changed at all.
-        for user in self.users_list:
-            header    = user.user_history[0]
-            clock_idx = header.index("Clock")
-            state_idx = header.index("State(E/R)")
-            if len(user.user_history) > 1 and user.user_history[-1][clock_idx] > time:
-                last_row = user.user_history.pop()
-                if last_row[state_idx] == "E":
-                    user.venue_history.pop()
+        #for user in self.users_list:
+            #header    = user.user_history[0]
+            #clock_idx = header.index("Clock")
+            #state_idx = header.index("State(E/R)")
+            #if len(user.user_history) > 1 and user.user_history[-1][clock_idx] > time:
+                #last_row = user.user_history.pop()
+                #if last_row[state_idx] == "E":
+                    #user.venue_history.pop()
 
     def resume(self, simulate_params, grid_params=None):
         """
@@ -334,7 +425,6 @@ class Simulation:
             # ---------------------------------------------------------------
             # CF resume: run collaborative filtering for the full resume window
             # ---------------------------------------------------------------
-            ##NEED MAIN IMPLEMENTATION!!!!
             cf_updates   = 4
             n_intervals  = cf_updates + 1
             cf_duration  = time_target - resume_start
@@ -348,8 +438,18 @@ class Simulation:
                     f"Resume CF interval {interval + 1}/{n_intervals}: "
                     f"rebuilding similarities, running to {t_end:.1f}..."
                 )
+
+                # Freeze venue_history for all users at the start of this
+                # interval so that build_cf_data sees a symmetric snapshot:
+                # every user is represented by the same temporal baseline,
+                # regardless of the order in which they will be simulated.
+                frozen_users = [
+                    _VenueSnapshot(user.venue_history)
+                    for user in self.users_list
+                ]
+
                 cf_neighbors, check_run_dir = model.utils_cf.build_cf_data(
-                    users_list     = self.users_list,
+                    users_list     = frozen_users,
                     top_k          = top_k,
                     cf_type        = algorithm,
                     simulate_params= self._simulate_params,

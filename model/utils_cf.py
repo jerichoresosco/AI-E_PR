@@ -37,10 +37,16 @@ def make_decision_cf(user, neighbors, cf_type, weight_by_similarity=True):
             if not _venue_list_exploring(user, neighbors, cf_label="MF"):
                 user.exploring()           # EPR fallback
         elif cf_type == "ba":
-            if not _ba_exploring(user, neighbors):
+            if not _ba_bv_exploring(user, neighbors, cf_type="ba"):
+                user.exploring()           # EPR fallback
+        elif cf_type == "bv":
+            if not _ba_bv_exploring(user, neighbors, cf_type="bv"):
+                user.exploring()           # EPR fallback
+        elif cf_type == "ra":
+            if not _ra_exploring(user, neighbors):
                 user.exploring()           # EPR fallback
         else:
-            raise ValueError(f"Unknown cf_type '{cf_type}'. Expected 'uk', 'ik', 'mf', or 'ba'.")
+            raise ValueError(f"Unknown cf_type '{cf_type}'. Expected 'uk', 'ik', 'mf', 'ba', 'bv', or 'ra'.")
 
     _advance_clock(user)
 
@@ -77,10 +83,18 @@ def build_cf_data(users_list, top_k, cf_type,
         return _build_mf_data(users_list, top_k, simulate_params,
                               grid_exists, grid_params, check_run_dir, interval_idx)
     elif cf_type == "ba":
-        return _build_ba_data(users_list, simulate_params,
+        return _build_ba_bv_data(users_list, simulate_params,
+                                 grid_exists, grid_params, check_run_dir, interval_idx,
+                                 mode="ba")
+    elif cf_type == "bv":
+        return _build_ba_bv_data(users_list, simulate_params,
+                                 grid_exists, grid_params, check_run_dir, interval_idx,
+                                 mode="bv")
+    elif cf_type == "ra":
+        return _build_ra_data(users_list, simulate_params,
                               grid_exists, grid_params, check_run_dir, interval_idx)
     else:
-        raise ValueError(f"Unknown cf_type '{cf_type}'. Expected 'uk', 'ik', 'mf', or 'ba'.")
+        raise ValueError(f"Unknown cf_type '{cf_type}'. Expected 'uk', 'ik', 'mf', 'ba', 'bv', or 'ra'.")
 
 
 # =============================================================================
@@ -629,63 +643,69 @@ def _build_mf_data(users_list, top_k, simulate_params,
 
 
 # =============================================================================
-# BARABASI-ALBERT  (cf_type = "ba")
+# BARABASI-ALBERT / BARABASI-VISITS  (cf_type = "ba" | "bv")
+#
+# Both recommenders share the same data format and exploration logic.
+# The only difference is how the raw count per venue is computed:
+#   "ba"  ->  number of *distinct users* who visited the venue
+#   "bv"  ->  *total visits* to the venue summed across all users
 # =============================================================================
 
 
-def _build_ba_data(users_list, simulate_params,
-                   grid_exists, grid_params, check_run_dir, interval_idx):
+def _build_ba_bv_data(users_list, simulate_params,
+                      grid_exists, grid_params, check_run_dir, interval_idx,
+                      mode):
     """
-    Build Barabási-Albert popularity weights for exploration.
-
-    For each venue (cell) known across all users, count how many *distinct*
-    users have visited it at least once.  Normalise to obtain a probability
-    vector.  This vector is the same for all users; individual filtering of
-    already-visited venues happens at exploration time inside _ba_exploring().
+    Build popularity-weighted venue data for Barabási-style exploration.
 
     Parameters
     ----------
-    users_list      : list of User
-    simulate_params : dict  - used only for folder naming
-    grid_exists     : bool
-    grid_params     : dict | None
-    check_run_dir   : str | None
-    interval_idx    : int
+    mode : "ba" | "bv"
+        "ba"  counts distinct users per venue (Barabási-Albert).
+        "bv"  sums total visits per venue (Barabási-Visits).
 
     Returns
     -------
     cf_neighbors  : list of dict  - one entry per user, all pointing to the same
-                    ba_data dict {venue_name: (x, y, raw_count, probability)}.
+                    data dict {venue_name: (x, y, raw_count, probability)}.
                     Wrapped in a list to match the interface expected by resume().
     check_run_dir : str
     """
-    # ------------------------------------------------------------------
-    # Count distinct users per venue
-    # ------------------------------------------------------------------
-    venue_user_count = {}   # venue_name -> set of user indices that visited it
-    venue_meta       = {}   # venue_name -> (x, y)
+    venue_meta = {}   # venue_name -> (x, y)
 
-    for ui, user in enumerate(users_list):
-        for row in user.venue_history[1:]:
-            vname = row[0]
-            if vname not in venue_user_count:
-                venue_user_count[vname] = set()
-                venue_meta[vname]       = (row[2], row[3])
-            venue_user_count[vname].add(ui)
+    if mode == "ba":
+        # venue_name -> set of user indices
+        accumulator = {}
+        for ui, user in enumerate(users_list):
+            for row in user.venue_history[1:]:
+                vname = row[0]
+                if vname not in accumulator:
+                    accumulator[vname] = set()
+                    venue_meta[vname]  = (row[2], row[3])
+                accumulator[vname].add(ui)
+        count_fn = lambda v: len(accumulator[v])
+        count_label = "distinct_users"
+    else:  # "bv"
+        # venue_name -> total visit count
+        accumulator = {}
+        for user in users_list:
+            for row in user.venue_history[1:]:
+                vname = row[0]
+                if vname not in accumulator:
+                    accumulator[vname] = 0
+                    venue_meta[vname]  = (row[2], row[3])
+                accumulator[vname] += row[1]
+        count_fn = lambda v: accumulator[v]
+        count_label = "total_visits"
 
-    if not venue_user_count:
-        # No data yet — return empty structure; _ba_exploring will fall back to EPR
+    if not accumulator:
         return [{} for _ in users_list], check_run_dir
 
-    # ------------------------------------------------------------------
-    # Build raw counts and normalise
-    # ------------------------------------------------------------------
-    venues      = list(venue_user_count.keys())
-    raw_counts  = np.array([len(venue_user_count[v]) for v in venues], dtype=float)
-    total       = raw_counts.sum()
-    probs       = raw_counts / total
+    venues     = list(accumulator.keys())
+    raw_counts = np.array([count_fn(v) for v in venues], dtype=float)
+    probs      = raw_counts / raw_counts.sum()
 
-    ba_data = {
+    pop_data = {
         v: (venue_meta[v][0], venue_meta[v][1], int(raw_counts[i]), float(probs[i]))
         for i, v in enumerate(venues)
     }
@@ -694,70 +714,148 @@ def _build_ba_data(users_list, simulate_params,
     # Resolve check folder and persist for diagnostics
     # ------------------------------------------------------------------
     check_run_dir  = _resolve_check_run_dir(
-        check_run_dir, "ba", simulate_params, grid_exists, grid_params
+        check_run_dir, mode, simulate_params, grid_exists, grid_params
     )
     interval_label = interval_idx + 1
 
     popularity_path = os.path.join(
-        check_run_dir, f"ba_popularity_interval_{interval_label:02d}.txt"
+        check_run_dir, f"{mode}_popularity_interval_{interval_label:02d}.txt"
     )
     with open(popularity_path, "w") as f:
-        f.write("venue_name,x,y,distinct_users,probability\n")
-        for v, (x, y, cnt, p) in ba_data.items():
+        f.write(f"venue_name,x,y,{count_label},probability\n")
+        for v, (x, y, cnt, p) in pop_data.items():
             f.write(f"{v},{x},{y},{cnt},{p:.8f}\n")
 
-    n_venues = len(venues)
-    n_users  = len(users_list)
     logger.info(
-        f"BA data built: {n_users} users, {n_venues} unique venues, "
+        f"{mode.upper()} data built: {len(users_list)} users, {len(venues)} unique venues, "
         f"interval={interval_label}"
     )
-    # ba_data is the same for every user; wrap it in a list so that
-    # resume() can index it as cf_neighbors[i], consistent with uk/ik/mf.
-    cf_neighbors = [ba_data] * n_users
+    cf_neighbors = [pop_data] * len(users_list)
     return cf_neighbors, check_run_dir
 
 
-def _ba_exploring(user, ba_data):
+def _ba_bv_exploring(user, pop_data, cf_type):
     """
-    Barabási-Albert exploration step.
+    Shared exploration step for "ba" and "bv".
 
-    Sample an unvisited venue proportionally to its global popularity
-    (number of distinct users who have visited it).  Venues already
-    visited by *this* user are excluded and the remaining probabilities
-    are re-normalised before sampling.
+    Samples an unvisited venue proportionally to its pre-computed probability
+    (distinct-user count for BA, total-visit count for BV).  Already-visited
+    venues are excluded and probabilities are re-normalised before sampling.
 
-    Returns False to trigger EPR fallback when no unvisited venues remain
-    in ba_data (e.g. on the very first interval when data is sparse).
-
-    On success sets: state="E", num_distinct_venues, next_position,
-    destination, _venue_index entry, delta_r, angle=None.
+    Returns False to trigger EPR fallback when no unvisited venues remain.
     """
-    if not ba_data:
-        logger.warning(f"User {user.uid}: BA exploration skipped - no popularity data.")
+    if not pop_data:
+        logger.warning(f"User {user.uid}: {cf_type.upper()} exploration skipped - no popularity data.")
         return False
 
-    my_venues = set(user._venue_index.keys())
-
-    # Filter to unvisited venues only
-    candidates = [(v, x, y, p) for v, (x, y, cnt, p) in ba_data.items()
+    my_venues  = set(user._venue_index.keys())
+    candidates = [(v, x, y, p) for v, (x, y, cnt, p) in pop_data.items()
                   if v not in my_venues]
 
     if not candidates:
         logger.warning(
-            f"User {user.uid}: BA exploration - EPR fallback "
+            f"User {user.uid}: {cf_type.upper()} exploration - EPR fallback "
             "(all known venues already visited)."
         )
         return False
 
-    names  = [c[0] for c in candidates]
-    xs     = [c[1] for c in candidates]
-    ys     = [c[2] for c in candidates]
-    raw_p  = np.array([c[3] for c in candidates], dtype=float)
-    probs  = raw_p / raw_p.sum()   # re-normalise after filtering
+    names = [c[0] for c in candidates]
+    xs    = [c[1] for c in candidates]
+    ys    = [c[2] for c in candidates]
+    raw_p = np.array([c[3] for c in candidates], dtype=float)
+    probs = raw_p / raw_p.sum()   # re-normalise after filtering
 
     chosen_idx = np.random.choice(len(names), p=probs)
-    chosen = [names[chosen_idx], 1, xs[chosen_idx], ys[chosen_idx]]
+    _set_user_exploration_state(user, [names[chosen_idx], 1, xs[chosen_idx], ys[chosen_idx]])
+    return True
+
+
+# =============================================================================
+# RANDOM  (cf_type = "ra")
+# =============================================================================
+
+
+def _build_ra_data(users_list, simulate_params,
+                   grid_exists, grid_params, check_run_dir, interval_idx):
+    """
+    Build the global venue catalogue for uniform-random exploration.
+
+    Collects every venue ever visited by any user (name + coordinates).
+    No counts or weights are needed: _ra_exploring samples uniformly
+    among all unvisited venues.
+
+    Returns
+    -------
+    cf_neighbors  : list of dict  - one entry per user, all pointing to
+                    the same ra_data dict {venue_name: (x, y)}.
+    check_run_dir : str
+    """
+    ra_data    = {}   # venue_name -> (x, y)
+
+    for user in users_list:
+        for row in user.venue_history[1:]:
+            vname = row[0]
+            if vname not in ra_data:
+                ra_data[vname] = (row[2], row[3])
+
+    if not ra_data:
+        return [{} for _ in users_list], check_run_dir
+
+    # ------------------------------------------------------------------
+    # Resolve check folder and persist catalogue for diagnostics
+    # ------------------------------------------------------------------
+    check_run_dir  = _resolve_check_run_dir(
+        check_run_dir, "ra", simulate_params, grid_exists, grid_params
+    )
+    interval_label = interval_idx + 1
+
+    catalogue_path = os.path.join(
+        check_run_dir, f"ra_catalogue_interval_{interval_label:02d}.txt"
+    )
+    with open(catalogue_path, "w") as f:
+        f.write("venue_name,x,y\n")
+        for v, (x, y) in ra_data.items():
+            f.write(f"{v},{x},{y}\n")
+
+    n_venues = len(ra_data)
+    n_users  = len(users_list)
+    logger.info(
+        f"RA data built: {n_users} users, {n_venues} unique venues, "
+        f"interval={interval_label}"
+    )
+    cf_neighbors = [ra_data] * n_users
+    return cf_neighbors, check_run_dir
+
+
+def _ra_exploring(user, ra_data):
+    """
+    Random exploration step.
+
+    Uniformly samples one venue from the global catalogue that the user
+    has not yet visited.
+
+    Returns False to trigger EPR fallback when all known venues have
+    already been visited by this user.
+    """
+    if not ra_data:
+        logger.warning(f"User {user.uid}: RA exploration skipped - no venue catalogue.")
+        return False
+
+    my_venues = set(user._venue_index.keys())
+
+    candidates = [(v, x, y) for v, (x, y) in ra_data.items()
+                  if v not in my_venues]
+
+    if not candidates:
+        logger.warning(
+            f"User {user.uid}: RA exploration - EPR fallback "
+            "(all known venues already visited)."
+        )
+        return False
+
+    chosen_idx = np.random.randint(len(candidates))
+    v, x, y    = candidates[chosen_idx]
+    chosen     = [v, 1, x, y]
 
     _set_user_exploration_state(user, chosen)
     return True
