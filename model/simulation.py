@@ -431,6 +431,10 @@ class Simulation:
             interval_len = cf_duration / n_intervals
 
             check_run_dir = None  # created on first interval, reused afterwards
+            # Generate the batch timestamp once so that the check folder shares
+            # the same ID as the raw/analysis batch saved for this run.
+            batch_ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            self._batch_ts = batch_ts   # store so save_raw_data / run_analysis can reuse it
 
             for interval in range(n_intervals):
                 t_end = resume_start + (interval + 1) * interval_len
@@ -457,6 +461,7 @@ class Simulation:
                     grid_params    = getattr(self, "_grid_params", None),
                     check_run_dir  = check_run_dir,
                     interval_idx   = interval,
+                    batch_ts       = batch_ts,
                 )
                 for i, user in enumerate(self.users_list):
                     neighbors = cf_neighbors[i]
@@ -833,6 +838,7 @@ class Simulation:
             base_params   = self._load_params,
             resume_params = self._simulate_params,
             grid_params   = gp,
+            batch_ts      = getattr(self, "_batch_ts", None),
         )
 
         total     = len(self.users_list)
@@ -965,6 +971,7 @@ class Simulation:
                 base_params   = self._load_params,
                 resume_params = analyse_params,
                 grid_params   = grid_params,
+                batch_ts      = getattr(self, "_batch_ts", None),
             )
             # Create the two variant subfolders inside the batch timestamp folder
             analysis_folder_mixed = os.path.join(batch_run_folder, "mixed")
@@ -1316,14 +1323,15 @@ class Simulation:
                 if not np.isnan(md):
                     pass  # mean_travel_distance retained in stats for other uses
 
+                self.s_rand_list.append(_sget("s_rand"))
+                self.s_unc_list.append( _sget("s_unc"))
+                self.s_real_list.append(_sget("s_real"))
+
             # -- collect all individual delta_r values for dist_distribution --
             if user_history_df is not None:
                 dist_col = user_history_df["Distance"].dropna()
                 dist_col = dist_col[dist_col > 0]
                 self.mean_dist_list.extend(dist_col.tolist())
-                self.s_rand_list.append(_sget("s_rand"))
-                self.s_unc_list.append( _sget("s_unc"))
-                self.s_real_list.append(_sget("s_real"))
 
             if venue_history_df is not None:
                 self.venue_history_list.append(venue_history_df)
@@ -1784,7 +1792,7 @@ class Simulation:
         os.makedirs(run_folder, exist_ok=True)
         return run_folder
 
-    def _make_combined_run_folder(self, data_type, base_params, resume_params, grid_params=None):
+    def _make_combined_run_folder(self, data_type, base_params, resume_params, grid_params=None, batch_ts=None):
         """
         Create and return a timestamped run folder under a two-level parameter
         hierarchy for chained (load → resume) simulations.
@@ -1809,6 +1817,12 @@ class Simulation:
             Must contain "ro", "gamma", "a_param", "b_param", "time", "algorithm".
         grid_params : dict, optional
             When provided, must contain "cell_lenght" and "cell_number".
+        batch_ts : str, optional
+            Timestamp string in the format "YYYYMMDD_HHMMSS_ffffff".
+            When provided, this exact string is used as the batch folder name
+            so that combined_raw_data, combined_analysis_data and the check
+            folder all share the same ID.  When None, a fresh timestamp is
+            generated.
 
         Returns
         -------
@@ -1849,10 +1863,12 @@ class Simulation:
                 f"_alg0_{alg0}_alg1_{alg1}"
             )
 
+        if batch_ts is None:
+            batch_ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         run_folder = os.path.join(
             base_folder,
             param_folder_name,
-            datetime.now().strftime("%Y%m%d_%H%M%S_%f"),
+            batch_ts,
         )
         os.makedirs(run_folder, exist_ok=True)
         return run_folder

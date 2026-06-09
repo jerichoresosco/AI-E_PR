@@ -53,7 +53,7 @@ def make_decision_cf(user, neighbors, cf_type, weight_by_similarity=True):
 
 def build_cf_data(users_list, top_k, cf_type,
                   simulate_params, grid_exists, grid_params,
-                  check_run_dir, interval_idx=0):
+                  check_run_dir, interval_idx=0, batch_ts=None):
     """
     Build neighbor / similarity structures for every user, depending on cf_type.
 
@@ -67,6 +67,8 @@ def build_cf_data(users_list, top_k, cf_type,
     grid_params     : dict | None
     check_run_dir   : str | None - pass None on first call; returned path reused afterwards
     interval_idx    : int  - 0-based interval index for file naming
+    batch_ts        : str | None - timestamp shared with the raw/analysis batch so that
+                      the check folder receives the same ID.  Generated fresh when None.
 
     Returns
     -------
@@ -75,35 +77,35 @@ def build_cf_data(users_list, top_k, cf_type,
     """
     if cf_type == "uk":
         return _build_uk_data(users_list, top_k, simulate_params,
-                              grid_exists, grid_params, check_run_dir, interval_idx)
+                              grid_exists, grid_params, check_run_dir, interval_idx,
+                              batch_ts=batch_ts)
     elif cf_type == "ik":
         return _build_ik_data(users_list, top_k, simulate_params,
-                              grid_exists, grid_params, check_run_dir, interval_idx)
+                              grid_exists, grid_params, check_run_dir, interval_idx,
+                              batch_ts=batch_ts)
     elif cf_type == "mf":
         return _build_mf_data(users_list, top_k, simulate_params,
-                              grid_exists, grid_params, check_run_dir, interval_idx)
+                              grid_exists, grid_params, check_run_dir, interval_idx,
+                              batch_ts=batch_ts)
     elif cf_type == "ba":
         return _build_ba_bv_data(users_list, simulate_params,
                                  grid_exists, grid_params, check_run_dir, interval_idx,
-                                 mode="ba")
+                                 mode="ba", batch_ts=batch_ts)
     elif cf_type == "bv":
         return _build_ba_bv_data(users_list, simulate_params,
                                  grid_exists, grid_params, check_run_dir, interval_idx,
-                                 mode="bv")
+                                 mode="bv", batch_ts=batch_ts)
     elif cf_type == "ra":
         return _build_ra_data(users_list, simulate_params,
-                              grid_exists, grid_params, check_run_dir, interval_idx)
+                              grid_exists, grid_params, check_run_dir, interval_idx,
+                              batch_ts=batch_ts)
     else:
         raise ValueError(f"Unknown cf_type '{cf_type}'. Expected 'uk', 'ik', 'mf', 'ba', 'bv', or 'ra'.")
 
 
-# =============================================================================
-# SHARED HELPERS
-# =============================================================================
-
 
 def _resolve_check_run_dir(check_run_dir, cf_type, simulate_params,
-                           grid_exists, grid_params):
+                           grid_exists, grid_params, batch_ts=None):
     """
     Resolve (or create) the per-run check subfolder.
 
@@ -111,6 +113,15 @@ def _resolve_check_run_dir(check_run_dir, cf_type, simulate_params,
         check/
             <cf_type>_ro_X_g_Y_a_Z_b_W_t_T[_cl_CL_cn_CN]_rs_R_ef_E/
                 YYYYMMDD_HHMMSS_ffffff/
+
+    Parameters
+    ----------
+    batch_ts : str, optional
+        Timestamp string in the format "YYYYMMDD_HHMMSS_ffffff".
+        When provided, this exact string is used as the batch folder name
+        so that the check folder shares the same ID as the raw/analysis
+        batch that generated the data.  When None, a fresh timestamp is
+        generated (legacy behaviour).
     """
     if check_run_dir is not None:
         return check_run_dir
@@ -130,7 +141,8 @@ def _resolve_check_run_dir(check_run_dir, cf_type, simulate_params,
         base += f"_cl_{grid_params['cell_lenght']}_cn_{grid_params['cell_number']}"
     base += f"_rs_{'y' if rstart else 'n'}_ef_{efrac}"
 
-    batch_ts      = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    if batch_ts is None:
+        batch_ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     check_run_dir = os.path.join(check_base, base, batch_ts)
     os.makedirs(check_run_dir, exist_ok=True)
     logger.info(f"Check folder for this run: {check_run_dir}")
@@ -346,7 +358,8 @@ def _venue_list_exploring(user, neighbors, cf_label):
 
 
 def _build_uk_data(users_list, top_k, simulate_params,
-                   grid_exists, grid_params, check_run_dir, interval_idx):
+                   grid_exists, grid_params, check_run_dir, interval_idx,
+                   batch_ts=None):
 
     n_users = len(users_list)
 
@@ -369,7 +382,8 @@ def _build_uk_data(users_list, top_k, simulate_params,
     # Resolve check folder
     # ------------------------------------------------------------------
     check_run_dir = _resolve_check_run_dir(
-        check_run_dir, "uk", simulate_params, grid_exists, grid_params
+        check_run_dir, "uk", simulate_params, grid_exists, grid_params,
+        batch_ts=batch_ts
     )
     interval_label = interval_idx + 1
 
@@ -429,7 +443,8 @@ def _build_uk_data(users_list, top_k, simulate_params,
 
 
 def _build_ik_data(users_list, top_k, simulate_params,
-                   grid_exists, grid_params, check_run_dir, interval_idx):
+                   grid_exists, grid_params, check_run_dir, interval_idx,
+                   batch_ts=None):
 
     n_users = len(users_list)
 
@@ -452,7 +467,8 @@ def _build_ik_data(users_list, top_k, simulate_params,
     # Resolve check folder
     # ------------------------------------------------------------------
     check_run_dir = _resolve_check_run_dir(
-        check_run_dir, "ik", simulate_params, grid_exists, grid_params
+        check_run_dir, "ik", simulate_params, grid_exists, grid_params,
+        batch_ts=batch_ts
     )
     interval_label = interval_idx + 1
 
@@ -534,7 +550,7 @@ def _build_ik_data(users_list, top_k, simulate_params,
 
 def _build_mf_data(users_list, top_k, simulate_params,
                    grid_exists, grid_params, check_run_dir, interval_idx,
-                   num_latent_factors=20):
+                   num_latent_factors=20, batch_ts=None):
     """
     Build MF-based recommendation lists for every user via truncated SVD.
 
@@ -587,7 +603,8 @@ def _build_mf_data(users_list, top_k, simulate_params,
     # Resolve check folder and persist singular values for diagnostics
     # ------------------------------------------------------------------
     check_run_dir = _resolve_check_run_dir(
-        check_run_dir, "mf", simulate_params, grid_exists, grid_params
+        check_run_dir, "mf", simulate_params, grid_exists, grid_params,
+        batch_ts=batch_ts
     )
     interval_label = interval_idx + 1
 
@@ -654,7 +671,7 @@ def _build_mf_data(users_list, top_k, simulate_params,
 
 def _build_ba_bv_data(users_list, simulate_params,
                       grid_exists, grid_params, check_run_dir, interval_idx,
-                      mode):
+                      mode, batch_ts=None):
     """
     Build popularity-weighted venue data for Barabási-style exploration.
 
@@ -714,7 +731,8 @@ def _build_ba_bv_data(users_list, simulate_params,
     # Resolve check folder and persist for diagnostics
     # ------------------------------------------------------------------
     check_run_dir  = _resolve_check_run_dir(
-        check_run_dir, mode, simulate_params, grid_exists, grid_params
+        check_run_dir, mode, simulate_params, grid_exists, grid_params,
+        batch_ts=batch_ts
     )
     interval_label = interval_idx + 1
 
@@ -723,7 +741,7 @@ def _build_ba_bv_data(users_list, simulate_params,
     )
     with open(popularity_path, "w") as f:
         f.write(f"venue_name,x,y,{count_label},probability\n")
-        for v, (x, y, cnt, p) in pop_data.items():
+        for v, (x, y, cnt, p) in sorted(pop_data.items(), key=lambda item: item[1][3], reverse=True):
             f.write(f"{v},{x},{y},{cnt},{p:.8f}\n")
 
     logger.info(
@@ -776,7 +794,8 @@ def _ba_bv_exploring(user, pop_data, cf_type):
 
 
 def _build_ra_data(users_list, simulate_params,
-                   grid_exists, grid_params, check_run_dir, interval_idx):
+                   grid_exists, grid_params, check_run_dir, interval_idx,
+                   batch_ts=None):
     """
     Build the global venue catalogue for uniform-random exploration.
 
@@ -805,7 +824,8 @@ def _build_ra_data(users_list, simulate_params,
     # Resolve check folder and persist catalogue for diagnostics
     # ------------------------------------------------------------------
     check_run_dir  = _resolve_check_run_dir(
-        check_run_dir, "ra", simulate_params, grid_exists, grid_params
+        check_run_dir, "ra", simulate_params, grid_exists, grid_params,
+        batch_ts=batch_ts
     )
     interval_label = interval_idx + 1
 

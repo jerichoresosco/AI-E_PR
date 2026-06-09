@@ -46,7 +46,7 @@ def main():
                                          # "ik" = Item-KNN CF
                                          # "mf" = Matrix Factorization CF
                                          # "ba" = Barabási-Albert exploration-popularity CF 
-                                         # "bc" = Barabási-Albert visit-popularity CF
+                                         # "bv" = Barabási-Albert visit-popularity CF
                                          # "ra" = Random recommender
         "top_k": 10,                     # neighbors used in CF algorithms (uk/ik/mf)
     }
@@ -54,8 +54,8 @@ def main():
     ##LATENT FACTOR = 20 HARDCODED
 
     grid_params = {
-        "cell_lenght": 101, 
-        "cell_number": 101 #must be odd to have a central cell
+        "cell_lenght": 100, 
+        "cell_number": 15 #must be odd to have a central cell
     }
 
     # ----------------------------------------------------------
@@ -84,8 +84,8 @@ def main():
         "gamma": 0.2,
         "a_param": 0.75,
         "b_param": 0.6,
-        "time": 10000,
-        "user_number": 5,       #For correct displaying
+        "time": 30000,
+        "user_number": 1000,       #For correct displaying
         "starting_position": "random",
         "algorithm": "ge",               # must match the simulate_params value used
         #"algorithm": "mf",              # uncomment to target a CF run
@@ -108,7 +108,7 @@ def main():
         "gamma": 0.2,
         "a_param": 0.75,
         "b_param": 0.6,
-        "time": 10000,            # time of the ORIGINAL simulation to load
+        "time": 30000,            # time of the ORIGINAL simulation to load
         "starting_position": "random",
         "algorithm": "ge",               # must match the original run's algorithm
         # "batch_id": "20240601_153012_004321",  # omit to use the most recent batch
@@ -129,10 +129,12 @@ def main():
         "gamma": 0.2,
         "a_param": 0.75,
         "b_param": 0.6,
-        "time": 20000,            # absolute target: users will run until clock=time
-        "algorithm": "ba",        # algorithm for the resume phase
-        "top_k": 30,              # neighbors used when algorithm is uk/ik/mf
+        "time": 130000,            # absolute target: users will run until clock=time
+        "algorithm": "bv",        # algorithm for the resume phase
+        "top_k": 40,              # neighbors used when algorithm is uk/ik/mf
     }
+
+    ###ATTENTION!!! HARDCODED BV/BA TOPK N utilscf
 
     # ----------------------------------------------------------
     # combined_plot_params -- used only in "cp" mode.
@@ -186,35 +188,35 @@ def main():
     #   }
     # ----------------------------------------------------------
     multiple_plot_params = {
-        "label":          ["EPR mf", "EPR ik", "EPR uk", "EPR ge", "EPR ba"],
+        "label":          ["EPR mf", "EPR ik", "EPR uk", "EPR ge", "EPR ba", "EPR bv", "EPR ra"],
         "ro": 0.1,
         "gamma": 0.2,
         "a_param": 0.75,
         "b_param": 0.6,
         "t0": 30000,
-        "t1": 230000,
+        "t1": 150000,
         "user_number": 1000,
         "starting_position": "random",
         "algorithm_0": "ge",
-        "algorithm_1": ["mf", "ik", "uk", "ge", "ba"],
+        "algorithm_1": ["mf", "ik", "uk", "ge", "ba", "bv", "ra"],
         "combined": True,
         "variant": "m",
     }
 
     plot_list = [
-        #"mobility",
-        #"rg_distribution", #checked but still double plot   #mp
-        #"dist_distribution", #mp
-        #"freq_distribution", #mp
-        #"two_radius", #mp
-        #"s_over_time", #mp
-        #"rg_over_time", #mp
-        #"aggregate_grid",   
-        #"batch_grid",  ##Problems in saving due to max lenght titole 260 characters
-        #"batch_stats", #mp
-        #"srand", #mp     
-        #"sunc", #mp      
-        #"sreal", #mp     
+        "mobility",
+        "rg_distribution", #checked but still double plot   #mp
+        "dist_distribution", #mp
+        "freq_distribution", #mp
+        "two_radius", #mp
+        "s_over_time", #mp
+        "rg_over_time", #mp
+        "aggregate_grid",   
+        "batch_grid",  ##Problems in saving due to max lenght titole 260 characters
+        "batch_stats", #mp
+        "srand", #mp     
+        "sunc", #mp      
+        "sreal", #mp     
         #"s_triple",   
         "venue_visits",
         "venue_popularity",
