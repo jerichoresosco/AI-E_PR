@@ -8,6 +8,7 @@ rimuovere la aggregategrid, è inutile e fuorviante
 
 la rimozione in simulation del last step per i t oltre il t_max è parziale e quindi sbagliata, perché per quanto l'ultima riga 
 venga rimossa dalla user_history ciò non avviene per gli update della venue_history (non ho verificato se anche altre quantità hanno problemi)
+    Per ora l'ho commentata, vedrò che farne
 
 Il lock sulle cartelle analizzate dovrebbe essere rivisto, dando secondo me la possibilità di sovrascrivere ciò che è stato analizzato con una nuova analisi
 
@@ -18,5 +19,8 @@ i vari utenti, ma al fine di non appesantire troppo il codice  la soluzione più
 (anche se chiaramente la differenza dei deltat estratti porta comunque ad un avanzamento asincrono). La ragione per cui voglio questo avanzamento è
 anzitutto concettuale. Secondariamente le venue_histories vengono interrogate ad esempio per uk_exploring. Dunque alcuni utenti si confrontano con un set
 di dati molto più piccolo di altri(differiscono nel numero di venues visitate dai neighbours)
+    Ora dovrebbe essere a posto. Viene fatta una copia delle venues prima di simulare ogni blocco del recommender 
 
 i knn non sono mean centered come il libro
+
+AGGIUNGERE L'ALTRO BA, QUELLO CORRETTO, ALLINEARE TEMPORALMENTE TUTTI GLI AVANZAMENTI NEI RECOMMENDER, RIFARE TUTTE LE SIMULAZIONI CON DENSITà RAGIONEVOLI

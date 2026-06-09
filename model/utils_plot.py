@@ -690,6 +690,105 @@ def print_batch_stats(batch_stats_list, filters=None, title=None):
 
     print()
 
+def plot_venue_ranking(venue_history_list, mode="visits", filters=None, title=None,
+                       show=False, series_list=None):
+    """
+    Plot venues sorted by descending rank on the x-axis.
+
+    Two modes are supported via the *mode* parameter:
+
+    ``"visits"``
+        Y-axis = total number of visits to each venue, summed across all users.
+        Venues are ranked by total visit count (rank 1 = most visited).
+
+    ``"popularity"``
+        Y-axis = number of *distinct* users that have visited each venue at
+        least once.  Venues are ranked by user count (rank 1 = most popular).
+
+    Works in both single-series mode (series_list=None) and multi-series mode
+    (multipleplot / "mp"), following the same pattern as plot_rg_distribution().
+
+    Parameters
+    ----------
+    venue_history_list : list of pandas.DataFrame
+        One DataFrame per user, each containing at least the columns
+        ``'Venue_name'`` (or the first column as venue identifier) and
+        ``'Number of visits'``.
+        Ignored when series_list is provided.
+    mode : str
+        ``"visits"`` or ``"popularity"``.
+    filters : dict, optional
+    title : str, optional
+    show : bool, optional
+    series_list : list of (str, list of pd.DataFrame), optional
+        Multi-series override: [(label, venue_history_list), ...].
+    """
+    _MODE_LABELS = {
+        "visits":     ("Venue rank (by total visits)",    "Total visits"),
+        "popularity": ("Venue rank (by distinct visitors)", "Number of distinct visitors"),
+    }
+    if mode not in _MODE_LABELS:
+        raise ValueError(f"plot_venue_ranking: unknown mode '{mode}'. Use 'visits' or 'popularity'.")
+
+    xlabel, ylabel = _MODE_LABELS[mode]
+    logger.info(f"Plotting venue ranking (mode='{mode}')")
+
+    if series_list is None:
+        series_list = _single_as_series(venue_history_list)
+    multi = len(series_list) > 1
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+
+    for idx, (label, vh_list) in enumerate(series_list):
+        if not vh_list:
+            logger.warning(f"plot_venue_ranking({mode}): no data for series '{label}'")
+            continue
+
+        if mode == "visits":
+            # Aggregate total visits per venue across all users
+            venue_totals = {}
+            for vh in vh_list:
+                # The venue identifier is in the first column
+                id_col = vh.columns[0]
+                for _, row in vh.iterrows():
+                    vid = row[id_col]
+                    venue_totals[vid] = venue_totals.get(vid, 0) + int(row["Number of visits"])
+            y_values = np.array(sorted(venue_totals.values(), reverse=True), dtype=float)
+
+        else:  # popularity
+            # Count distinct users per venue
+            venue_user_count = {}
+            for user_idx, vh in enumerate(vh_list):
+                id_col = vh.columns[0]
+                for _, row in vh.iterrows():
+                    vid = row[id_col]
+                    venue_user_count.setdefault(vid, set()).add(user_idx)
+            y_values = np.array(
+                sorted((len(v) for v in venue_user_count.values()), reverse=True),
+                dtype=float,
+            )
+
+        if len(y_values) == 0:
+            logger.warning(f"plot_venue_ranking({mode}): empty y_values for series '{label}'")
+            continue
+
+        x_values = np.arange(1, len(y_values) + 1)
+        color = _MP_COLORS[idx % len(_MP_COLORS)] if multi else "#E73948"
+        ax.plot(x_values, y_values, "-", linewidth=1.2, color=color,
+                label=label if multi else None)
+
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.set_yscale("log")
+    ax.grid(True, linestyle="--", alpha=0.4)
+    if multi:
+        ax.legend()
+    if title:
+        ax.set_title(title, fontsize=7)
+    plt.tight_layout()
+    filepath_save_plot_or_show("plots", filters=filters, show=show)
+
+
 def plot_aggregate_grid(grid_matrix, filters=None, title=None, batch_id=None, mask_center=True, show=False):
     """ Plot a heatmap of an aggregate grid matrix.
 

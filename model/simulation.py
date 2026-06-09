@@ -13,6 +13,35 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+class _VenueSnapshot:
+    """
+    Lightweight proxy that exposes a frozen copy of a single user's
+    venue_history to build_cf_data().
+
+    build_cf_data() (and _build_uv_matrix inside it) only reads
+    user.venue_history — it never touches user_history, grid, clock, or
+    any other User attribute.  Passing a _VenueSnapshot instead of the
+    live User object guarantees that every user in a CF interval is
+    evaluated against the same temporal baseline: the state of
+    venue_history at the *start* of that interval, before any user has
+    been advanced.  This removes the ordering asymmetry that would
+    otherwise arise from simulating users sequentially.
+
+    Parameters
+    ----------
+    venue_history : list
+        The live user.venue_history at the moment the snapshot is taken.
+        A shallow copy of the outer list is stored; individual rows are
+        not copied because build_cf_data only reads them.
+    """
+    __slots__ = ("venue_history",)
+
+    def __init__(self, venue_history):
+        # Shallow-copy the list so that rows appended during simulation
+        # of this interval do not appear in the frozen view.
+        self.venue_history = list(venue_history)
+
+
 class Simulation:
     """
     three-phase mobility simulation pipeline:
@@ -104,9 +133,9 @@ class Simulation:
         """
         Run the EPR mobility simulation from scratch and store results in self.users_list.
 
-        Only EPR algorithms are accepted here. CF algorithms ("uk", "ik", "mf")
-        require pre-existing trajectory data and must be launched via resume()
-        after _reconstruct_users_from_raw().
+        Only EPR algorithms are accepted here. CF algorithms ("uk", "ik", "mf",
+        "ba", "bv", "ra") require pre-existing trajectory data and must be launched
+        via resume() after _reconstruct_users_from_raw().
 
         Parameters
         ----------
@@ -115,7 +144,7 @@ class Simulation:
             Must contain: "algorithm" -- one of:
               "ce"  : classic EPR (no grid)
               "ge"  : grid EPR
-            CF algorithms ("uk", "ik", "mf") raise ValueError here.
+            CF algorithms ("uk", "ik", "mf", "ba", "bv", "ra") raise ValueError here.
         grid_params : dict, optional
             Required when algorithm is "ge". Must contain "cell_lenght" and
             "cell_number".
@@ -130,7 +159,7 @@ class Simulation:
         starting_position = simulate_params["starting_position"]
         top_k        = simulate_params.get("top_k", 10)
 
-        _VALID_ALGORITHMS = ("ce", "ge", "uk", "ik", "mf", "ba")
+        _VALID_ALGORITHMS = ("ce", "ge", "uk", "ik", "mf", "ba", "bv", "ra")
         if algorithm not in _VALID_ALGORITHMS:
             raise ValueError(
                 f"run(): unknown algorithm '{algorithm}'. "
@@ -224,18 +253,80 @@ class Simulation:
                 pct = ((i + 1) / user_number) * 100
                 logger.info(f"EPR progress: {pct:.0f}% ({i+1}/{user_number} users)")
 
+        # ---------------------------------------------------------------
+        # Post-run: replace users with empty user_history
+        # ---------------------------------------------------------------
+        replacement_uid = user_number
+        users_replaced = 0
+        valid_users = []
+
+        for user in self.users_list:
+            if len(user.user_history) > 1:
+                valid_users.append(user)
+            else:
+                logger.warning(
+                    f"{user.uid}: user_history is empty — discarding and replacing."
+                )
+                while True:
+                    if self._starting_position == "random":
+                        sc = self._spatial_center
+                        init_pos = (
+                            np.random.uniform(-sc, sc),
+                            np.random.uniform(-sc, sc),
+                        )
+                    elif self._starting_position == "normal":
+                        sc = self._spatial_center
+                        sigma = sc / 3
+                        def _sample(sc=sc, sigma=sigma):
+                            while True:
+                                v = np.random.normal(0, sigma)
+                                if -sc <= v <= sc:
+                                    return float(v)
+                        init_pos = (_sample(), _sample())
+                    else:
+                        init_pos = None
+
+                    replacement = model.user.User(
+                        uid=f"User_{replacement_uid}",
+                        a_param=a_param,
+                        b_param=b_param,
+                        grid=grid_exists,
+                        simulation=self,
+                        initial_position=init_pos,
+                    )
+                    while replacement.clock < time:
+                        replacement.make_decision()
+
+                    replacement_uid += 1
+
+                    if len(replacement.user_history) > 1:
+                        valid_users.append(replacement)
+                        users_replaced += 1
+                        break
+                    else:
+                        logger.warning(
+                            f"User_{replacement_uid - 1}: replacement also empty, retrying..."
+                        )
+
+        self.users_list = valid_users
+
+        if users_replaced > 0:
+            logger.info(
+                f"Replaced {users_replaced} empty user(s) with valid replacements."
+            )
+
         #TO BE SOLVED!!! Here we are trying to remove what is generated past the limit time, that is the last step for each user,
         #but this solution is not working properly, because what is updated in make_decision and make_decision_cf are user_history,
         #venue_history and grid.matrix, so we need to find a way to remove the last step from all of them. We are correctly removing user_history,
         #partially venue history and the grid is not changed at all.
-        for user in self.users_list:
-            header    = user.user_history[0]
-            clock_idx = header.index("Clock")
-            state_idx = header.index("State(E/R)")
-            if len(user.user_history) > 1 and user.user_history[-1][clock_idx] > time:
-                last_row = user.user_history.pop()
-                if last_row[state_idx] == "E":
-                    user.venue_history.pop()
+        #for user in self.users_list:
+            #header    = user.user_history[0]
+            #clock_idx = header.index("Clock")
+            #state_idx = header.index("State(E/R)")
+            #if len(user.user_history) > 1 and user.user_history[-1][clock_idx] > time:
+                #last_row = user.user_history.pop()
+                #if last_row[state_idx] == "E":
+                    #user.venue_history.pop()
 
     def resume(self, simulate_params, grid_params=None):
         """
@@ -247,7 +338,7 @@ class Simulation:
         the users already carry (i.e. the end-time of the previous run phase).
 
         The algorithm is taken from simulate_params["algorithm"] and must be
-        one of: "ce", "ge", "uk", "ik", "mf", "ba".
+        one of: "ce", "ge", "uk", "ik", "mf", "ba", "bv", "ra".
 
         Parameters
         ----------
@@ -334,13 +425,16 @@ class Simulation:
             # ---------------------------------------------------------------
             # CF resume: run collaborative filtering for the full resume window
             # ---------------------------------------------------------------
-            ##NEED MAIN IMPLEMENTATION!!!!
             cf_updates   = 4
             n_intervals  = cf_updates + 1
             cf_duration  = time_target - resume_start
             interval_len = cf_duration / n_intervals
 
             check_run_dir = None  # created on first interval, reused afterwards
+            # Generate the batch timestamp once so that the check folder shares
+            # the same ID as the raw/analysis batch saved for this run.
+            batch_ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            self._batch_ts = batch_ts   # store so save_raw_data / run_analysis can reuse it
 
             for interval in range(n_intervals):
                 t_end = resume_start + (interval + 1) * interval_len
@@ -348,8 +442,18 @@ class Simulation:
                     f"Resume CF interval {interval + 1}/{n_intervals}: "
                     f"rebuilding similarities, running to {t_end:.1f}..."
                 )
+
+                # Freeze venue_history for all users at the start of this
+                # interval so that build_cf_data sees a symmetric snapshot:
+                # every user is represented by the same temporal baseline,
+                # regardless of the order in which they will be simulated.
+                frozen_users = [
+                    _VenueSnapshot(user.venue_history)
+                    for user in self.users_list
+                ]
+
                 cf_neighbors, check_run_dir = model.utils_cf.build_cf_data(
-                    users_list     = self.users_list,
+                    users_list     = frozen_users,
                     top_k          = top_k,
                     cf_type        = algorithm,
                     simulate_params= self._simulate_params,
@@ -357,6 +461,7 @@ class Simulation:
                     grid_params    = getattr(self, "_grid_params", None),
                     check_run_dir  = check_run_dir,
                     interval_idx   = interval,
+                    batch_ts       = batch_ts,
                 )
                 for i, user in enumerate(self.users_list):
                     neighbors = cf_neighbors[i]
@@ -733,6 +838,7 @@ class Simulation:
             base_params   = self._load_params,
             resume_params = self._simulate_params,
             grid_params   = gp,
+            batch_ts      = getattr(self, "_batch_ts", None),
         )
 
         total     = len(self.users_list)
@@ -865,6 +971,7 @@ class Simulation:
                 base_params   = self._load_params,
                 resume_params = analyse_params,
                 grid_params   = grid_params,
+                batch_ts      = getattr(self, "_batch_ts", None),
             )
             # Create the two variant subfolders inside the batch timestamp folder
             analysis_folder_mixed = os.path.join(batch_run_folder, "mixed")
@@ -1103,6 +1210,8 @@ class Simulation:
             "sunc":               {"stats"},
             "sreal":              {"stats"},
             "s_triple":           {"stats"},
+            "venue_visits":       {"venue_history"},
+            "venue_popularity":   {"venue_history"},
         }
 
         if plot_list is not None:
@@ -1214,14 +1323,15 @@ class Simulation:
                 if not np.isnan(md):
                     pass  # mean_travel_distance retained in stats for other uses
 
+                self.s_rand_list.append(_sget("s_rand"))
+                self.s_unc_list.append( _sget("s_unc"))
+                self.s_real_list.append(_sget("s_real"))
+
             # -- collect all individual delta_r values for dist_distribution --
             if user_history_df is not None:
                 dist_col = user_history_df["Distance"].dropna()
                 dist_col = dist_col[dist_col > 0]
                 self.mean_dist_list.extend(dist_col.tolist())
-                self.s_rand_list.append(_sget("s_rand"))
-                self.s_unc_list.append( _sget("s_unc"))
-                self.s_real_list.append(_sget("s_real"))
 
             if venue_history_df is not None:
                 self.venue_history_list.append(venue_history_df)
@@ -1374,6 +1484,18 @@ class Simulation:
                 filters=p, title=model.utils_plot.build_plot_title("Entropy Distributions", p),
                 show=self._show,
             )
+        if "venue_visits" in plot_list:
+            model.utils_plot.plot_venue_ranking(
+                self.venue_history_list, mode="visits",
+                filters=p, title=model.utils_plot.build_plot_title("Venue Visits Ranking", p),
+                show=self._show,
+            )
+        if "venue_popularity" in plot_list:
+            model.utils_plot.plot_venue_ranking(
+                self.venue_history_list, mode="popularity",
+                filters=p, title=model.utils_plot.build_plot_title("Venue Popularity Ranking", p),
+                show=self._show,
+            )
 
     # ==========================================================================
     # MULTIPLEPLOT  ("mp" mode)
@@ -1463,17 +1585,18 @@ class Simulation:
             tmp.load_analysis_data(p_dict, grid_params=grid_params, plot_list=plot_list)
 
             series = {
-                "label":            label,
-                "rg_list":          list(tmp.rg_list),
-                "two_rg_list":      list(tmp.two_rg_list),
-                "mean_dist_list":   list(tmp.mean_dist_list),
-                "all_rg_over_time": list(tmp.all_rg_over_time),
-                "all_s_over_time":  list(tmp.all_s_over_time),
-                "batch_stats_list": list(tmp.batch_stats_list),
-                "_plot_params":     dict(tmp._plot_params),
-                "s_rand_list":      list(tmp.s_rand_list),
-                "s_unc_list":       list(tmp.s_unc_list),
-                "s_real_list":      list(tmp.s_real_list),
+                "label":               label,
+                "rg_list":             list(tmp.rg_list),
+                "two_rg_list":         list(tmp.two_rg_list),
+                "mean_dist_list":      list(tmp.mean_dist_list),
+                "all_rg_over_time":    list(tmp.all_rg_over_time),
+                "all_s_over_time":     list(tmp.all_s_over_time),
+                "batch_stats_list":    list(tmp.batch_stats_list),
+                "_plot_params":        dict(tmp._plot_params),
+                "s_rand_list":         list(tmp.s_rand_list),
+                "s_unc_list":          list(tmp.s_unc_list),
+                "s_real_list":         list(tmp.s_real_list),
+                "venue_history_list":  list(tmp.venue_history_list),
             }
             self._mp_series.append(series)
             logger.info(
@@ -1593,6 +1716,24 @@ class Simulation:
                 show=show,
             )
 
+        if "venue_visits" in plot_list:
+            model.utils_plot.plot_venue_ranking(
+                venue_history_list=None, mode="visits",
+                series_list=[(s["label"], s["venue_history_list"]) for s in self._mp_series],
+                filters=first_p,
+                title=model.utils_plot.build_plot_title("Venue Visits Ranking (multi)", first_p),
+                show=show,
+            )
+
+        if "venue_popularity" in plot_list:
+            model.utils_plot.plot_venue_ranking(
+                venue_history_list=None, mode="popularity",
+                series_list=[(s["label"], s["venue_history_list"]) for s in self._mp_series],
+                filters=first_p,
+                title=model.utils_plot.build_plot_title("Venue Popularity Ranking (multi)", first_p),
+                show=show,
+            )
+
     # ==========================================================================
     # UTILITY
     # ==========================================================================
@@ -1651,7 +1792,7 @@ class Simulation:
         os.makedirs(run_folder, exist_ok=True)
         return run_folder
 
-    def _make_combined_run_folder(self, data_type, base_params, resume_params, grid_params=None):
+    def _make_combined_run_folder(self, data_type, base_params, resume_params, grid_params=None, batch_ts=None):
         """
         Create and return a timestamped run folder under a two-level parameter
         hierarchy for chained (load → resume) simulations.
@@ -1676,6 +1817,12 @@ class Simulation:
             Must contain "ro", "gamma", "a_param", "b_param", "time", "algorithm".
         grid_params : dict, optional
             When provided, must contain "cell_lenght" and "cell_number".
+        batch_ts : str, optional
+            Timestamp string in the format "YYYYMMDD_HHMMSS_ffffff".
+            When provided, this exact string is used as the batch folder name
+            so that combined_raw_data, combined_analysis_data and the check
+            folder all share the same ID.  When None, a fresh timestamp is
+            generated.
 
         Returns
         -------
@@ -1716,10 +1863,12 @@ class Simulation:
                 f"_alg0_{alg0}_alg1_{alg1}"
             )
 
+        if batch_ts is None:
+            batch_ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         run_folder = os.path.join(
             base_folder,
             param_folder_name,
-            datetime.now().strftime("%Y%m%d_%H%M%S_%f"),
+            batch_ts,
         )
         os.makedirs(run_folder, exist_ok=True)
         return run_folder
