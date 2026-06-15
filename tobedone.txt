@@ -23,4 +23,13 @@ di dati molto più piccolo di altri(differiscono nel numero di venues visitate d
 
 i knn non sono mean centered come il libro
 
-AGGIUNGERE L'ALTRO BA, QUELLO CORRETTO, ALLINEARE TEMPORALMENTE TUTTI GLI AVANZAMENTI NEI RECOMMENDER, RIFARE TUTTE LE SIMULAZIONI CON DENSITà RAGIONEVOLI
+Aggiornamento:
+
+1. Istogramma numero visite / numero di utenti ricevuti dalle cartelle
+2. Provare varie configurazioni griglia-epr+gravity(d-epr?) con inizializzazioni uniform, normal, powerlaw, lognorm
+3. Verificare il meccanismo di creazione delle probabilità dei recommender. Verificare il fallback to epr quantitativamente, ovvero quante sono le venues
+    che non sono selezionabili nelle liste?
+4. Ranking efficacia recommender. Un test in cui metti a confronto le esplorazioni con epr vs raccomandazione epr (considerando non 1vs 1 ma selezione vs topk, ma non ho capito
+    perché i topk non sono sempre venues)
+5. Separare i dati in dati completi (E+R) in dati solo esplorativi (E) e vedere statistiche e grafici solo lì
+6. Implementare un EPR che abbia un timestep fisso e non powerlaw
