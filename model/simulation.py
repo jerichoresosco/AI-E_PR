@@ -1210,8 +1210,10 @@ class Simulation:
             "sunc":               {"stats"},
             "sreal":              {"stats"},
             "s_triple":           {"stats"},
-            "venue_visits":       {"venue_history"},
-            "venue_popularity":   {"venue_history"},
+            "venue_visits":                 {"venue_history"},
+            "venue_popularity":             {"venue_history"},
+            "venue_visits_distribution":    {"venue_history"},
+            "venue_explorers_distribution": {"venue_history"},
         }
 
         if plot_list is not None:
@@ -1496,6 +1498,20 @@ class Simulation:
                 filters=p, title=model.utils_plot.build_plot_title("Venue Popularity Ranking", p),
                 show=self._show,
             )
+        if "venue_visits_distribution" in plot_list:
+            model.utils_plot.plot_venue_count_distribution(
+                self.venue_history_list, mode="visits",
+                filters=p,
+                title=model.utils_plot.build_plot_title("Venue Visits Distribution", p),
+                show=self._show,
+            )
+        if "venue_explorers_distribution" in plot_list:
+            model.utils_plot.plot_venue_count_distribution(
+                self.venue_history_list, mode="explorers",
+                filters=p,
+                title=model.utils_plot.build_plot_title("Venue Explorers Distribution", p),
+                show=self._show,
+            )
 
     # ==========================================================================
     # MULTIPLEPLOT  ("mp" mode)
@@ -1731,6 +1747,24 @@ class Simulation:
                 series_list=[(s["label"], s["venue_history_list"]) for s in self._mp_series],
                 filters=first_p,
                 title=model.utils_plot.build_plot_title("Venue Popularity Ranking (multi)", first_p),
+                show=show,
+            )
+
+        if "venue_visits_distribution" in plot_list:
+            model.utils_plot.plot_venue_count_distribution(
+                venue_history_list=None, mode="visits",
+                series_list=[(s["label"], s["venue_history_list"]) for s in self._mp_series],
+                filters=first_p,
+                title=model.utils_plot.build_plot_title("Venue Visits Distribution (multi)", first_p),
+                show=show,
+            )
+
+        if "venue_explorers_distribution" in plot_list:
+            model.utils_plot.plot_venue_count_distribution(
+                venue_history_list=None, mode="explorers",
+                series_list=[(s["label"], s["venue_history_list"]) for s in self._mp_series],
+                filters=first_p,
+                title=model.utils_plot.build_plot_title("Venue Explorers Distribution (multi)", first_p),
                 show=show,
             )
 

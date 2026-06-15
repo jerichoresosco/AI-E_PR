@@ -37,8 +37,8 @@ def main():
         "gamma": 0.2,
         "a_param": 0.75,
         "b_param": 0.6,
-        "user_number": 1000,
-        "time": 30000,
+        "user_number": 1,
+        "time": 3000,
         "starting_position": "random",   # "centered" | "random" | "normal"
         "algorithm": "ge",               # "ce" = classic EPR (no grid)
                                          # "ge" = grid EPR
@@ -84,8 +84,8 @@ def main():
         "gamma": 0.2,
         "a_param": 0.75,
         "b_param": 0.6,
-        "time": 30000,
-        "user_number": 1000,       #For correct displaying
+        "time": 3000,
+        "user_number": 1,       #For correct displaying
         "starting_position": "random",
         "algorithm": "ge",               # must match the simulate_params value used
         #"algorithm": "mf",              # uncomment to target a CF run
@@ -204,22 +204,24 @@ def main():
     }
 
     plot_list = [
-        "mobility",
-        "rg_distribution", #checked but still double plot   #mp
-        "dist_distribution", #mp
-        "freq_distribution", #mp
-        "two_radius", #mp
-        "s_over_time", #mp
-        "rg_over_time", #mp
-        "aggregate_grid",   
-        "batch_grid",  ##Problems in saving due to max lenght titole 260 characters
+        #"mobility",
+        #"rg_distribution", #checked but still double plot   #mp
+        #"dist_distribution", #mp
+        #"freq_distribution", 
+        #"two_radius", #mp
+        #"s_over_time", #mp
+        #"rg_over_time", #mp
+        #"aggregate_grid",   
+        #"batch_grid",  ##Problems in saving due to max lenght title 260 characters
         "batch_stats", #mp
-        "srand", #mp     
-        "sunc", #mp      
-        "sreal", #mp     
+        #"srand", #mp     
+       # "sunc", #mp      
+       # "sreal", #mp     
         #"s_triple",   
-        "venue_visits",
-        "venue_popularity",
+        #"venue_visits",
+        #"venue_popularity",
+        "venue_visits_distribution", #mp   # distribuzione visite per venue
+        "venue_explorers_distribution", #mp
     ]
 
     show = True #if True only shows the plots, if False only saves them to disk
