@@ -6,6 +6,7 @@ import model.utils_cf
 import model.grid
 import pandas as pd
 import os
+import concurrent.futures
 from datetime import datetime
 from pprint import pprint
 
@@ -40,6 +41,144 @@ class _VenueSnapshot:
         # Shallow-copy the list so that rows appended during simulation
         # of this interval do not appear in the frozen view.
         self.venue_history = list(venue_history)
+
+
+# PARALLELIZATION HELPERS
+
+
+def _default_n_workers(n_tasks=None):
+    """Default worker count: all logical cores, capped at the task count."""
+    n_cpu = os.cpu_count() or 1
+    if n_tasks is not None:
+        return max(1, min(n_cpu, n_tasks))
+    return max(1, n_cpu)
+
+
+class _SimParamsStub:
+    """
+    Lightweight, picklable stand-in for a Simulation instance.
+
+    User.__init__/make_decision and utils_cf.make_decision_cf only ever
+    read `.ro`, `.gamma`, `.grid_cell_lenght`, `.grid_cell_number` off the
+    `simulation` object they're handed. This stub carries exactly that and
+    nothing else, so worker processes never need to (de)serialize the real
+    Simulation object (see module note above).
+    """
+    __slots__ = ("ro", "gamma", "grid_cell_lenght", "grid_cell_number")
+
+    def __init__(self, ro, gamma, grid_cell_lenght=None, grid_cell_number=None):
+        self.ro = ro
+        self.gamma = gamma
+        self.grid_cell_lenght = grid_cell_lenght
+        self.grid_cell_number = grid_cell_number
+
+
+def _simulate_one_user(task):
+    """
+    Worker for run(): build one User from scratch and run it to time_target.
+    Receives only plain data + a picklable sim_stub, never a live Simulation.
+    """
+    (uid_idx, a_param, b_param, grid_exists, sim_stub,
+     starting_position, spatial_center, time_target, seed) = task
+
+    np.random.seed(seed)
+
+    if starting_position == "random":
+        sc = spatial_center
+        init_pos = (np.random.uniform(-sc, sc), np.random.uniform(-sc, sc))
+    elif starting_position == "normal":
+        sc = spatial_center
+        sigma = sc / 3
+        def _sample():
+            while True:
+                v = np.random.normal(0, sigma)
+                if -sc <= v <= sc:
+                    return float(v)
+        init_pos = (_sample(), _sample())
+    else:
+        init_pos = None
+
+    user = model.user.User(
+        uid=f"User_{uid_idx}",
+        a_param=a_param,
+        b_param=b_param,
+        grid=grid_exists,
+        simulation=sim_stub,
+        initial_position=init_pos,
+    )
+    while user.clock < time_target:
+        user.make_decision()
+    return user
+
+
+def _resume_epr_one_user(task):
+    """Worker for resume(), pure-EPR branch: advance one already-built user."""
+    user, time_target, seed = task
+    np.random.seed(seed)
+    while user.clock < time_target:
+        user.make_decision()
+    return user
+
+
+def _resume_cf_one_user(task):
+    """Worker for resume(), CF branch: advance one user within one interval."""
+    user, neighbors, cf_type, t_end, seed = task
+    np.random.seed(seed)
+    while user.clock < t_end:
+        user.make_decision_cf(neighbors, cf_type)
+    return user
+
+
+def _analyze_one_user(task):
+    """
+    Worker for run_analysis(): compute and write every per-user analysis
+    artifact (history/venue/stats/grid parquet, for one or two variants).
+
+    Receives only already-extracted DataFrames -- never a live User or the
+    Simulation -- so there is nothing problematic to pickle. This is where
+    most of the analysis-phase wall-clock time actually goes: compute_stats
+    calls compute_real_entropy, which is an O(n^2) pure-Python loop over the
+    trajectory, repeated once (or twice, "mixed"+"pure") per user.
+    """
+    i, user_history_df, venue_history_df, grid_df, variant_folders, pure_t_start = task
+
+    for variant, folder in variant_folders:
+        if variant == "pure":
+            uh = user_history_df[user_history_df["Clock"] > pure_t_start].copy()
+            pure_venues = uh["Destination"].dropna().unique()
+            vh = venue_history_df[venue_history_df.iloc[:, 0].isin(pure_venues)].copy()
+        else:
+            uh = user_history_df
+            vh = venue_history_df
+
+        stats_df        = model.utils.compute_stats(uh, vh)
+        rg_over_time_df = model.utils.compute_rg_over_time(uh)
+        s_over_time_df  = model.utils.compute_s_over_time(uh)
+
+        dist_col  = uh["Distance"].dropna()
+        dist_col  = dist_col[dist_col > 0]
+        mean_dist = float(dist_col.mean()) if len(dist_col) > 0 else 0.0
+        num_venues = int(len(vh))
+
+        extra_rows = pd.DataFrame([
+            {"metric": "mean_travel_distance", "value": mean_dist},
+            {"metric": "num_venues",            "value": float(num_venues)},
+        ])
+        stats_df = pd.concat([stats_df, extra_rows], ignore_index=True)
+
+        uh = uh.copy()
+        uh["rg"] = rg_over_time_df["rg"].values
+        s_map = dict(zip(s_over_time_df["clock"].values, s_over_time_df["s"].values))
+        uh["s"] = uh["Clock"].map(s_map).ffill()
+
+        uh.to_parquet(os.path.join(folder, f"user_{i}_history.parquet"), index=False)
+        vh.to_parquet(os.path.join(folder, f"user_{i}_venue.parquet"),  index=False)
+        stats_df.to_parquet(os.path.join(folder, f"user_{i}_stats.parquet"), index=False)
+
+        if grid_df is not None:
+            grid_df.to_parquet(os.path.join(folder, f"user_{i}_grid.parquet"), index=False)
+
+    return i
 
 
 class Simulation:
@@ -210,48 +349,48 @@ class Simulation:
                 #(cell_lenght*cell_number, cell_lenght*cell_number), so the center is in the middle of the grid, not at (0,0)
 
         milestone = max(1, user_number // 10) #10% progress milestones for logging
+        n_workers = _default_n_workers(user_number)
         logger.info(
-            f"Starting simulation for {user_number} users (algorithm='{algorithm}')..."
+            f"Starting simulation for {user_number} users (algorithm='{algorithm}'), "
+            f"using {n_workers} worker process(es)..."
         )
 
         # ---------------------------------------------------------------
-        # EPR loop: create users and run them to full time
+        # EPR loop: create users and run them to full time, in parallel.
+        # Each task builds and runs one user end-to-end; users never share
+        # any mutable state (each gets its own private Grid instance), so
+        # this is safe. See the module-level note above _simulate_one_user
+        # for why a lightweight sim_stub is used instead of `self`, and
+        # why every task carries its own RNG seed.
         # ---------------------------------------------------------------
-        for i in range(user_number):
-            if self._starting_position == "random":
-                sc = self._spatial_center
-                init_pos = (
-                    np.random.uniform(-sc, sc),
-                    np.random.uniform(-sc, sc),
-                )
-            elif self._starting_position == "normal":
-                sc = self._spatial_center
-                sigma = sc / 3
-                def _sample(sc=sc, sigma=sigma):
-                    while True:
-                        v = np.random.normal(0, sigma)
-                        if -sc <= v <= sc:
-                            return float(v)
-                init_pos = (_sample(), _sample())
-            else:
-                init_pos = None
+        sim_stub = _SimParamsStub(
+            ro, gamma,
+            getattr(self, "grid_cell_lenght", None),
+            getattr(self, "grid_cell_number", None),
+        )
+        spatial_center = getattr(self, "_spatial_center", None)
+        base_seed = int(np.random.SeedSequence().entropy % (2**31))
 
-            user = model.user.User(
-                uid=f"User_{i}",
-                a_param=a_param,
-                b_param=b_param,
-                grid=grid_exists,
-                simulation=self,
-                initial_position=init_pos,
-            )
-            while user.clock < time:
-                user.make_decision()
+        tasks = [
+            (i, a_param, b_param, grid_exists, sim_stub,
+             self._starting_position, spatial_center, time,
+             (base_seed + i) % (2**32 - 1))
+            for i in range(user_number)
+        ]
 
-            self.users_list.append(user)
+        results = {}
+        completed = 0
+        with concurrent.futures.ProcessPoolExecutor(max_workers=n_workers) as executor:
+            futures = {executor.submit(_simulate_one_user, t): t[0] for t in tasks}
+            for future in concurrent.futures.as_completed(futures):
+                idx = futures[future]
+                results[idx] = future.result()
+                completed += 1
+                if completed % milestone == 0 or completed == user_number:
+                    pct = (completed / user_number) * 100
+                    logger.info(f"EPR progress: {pct:.0f}% ({completed}/{user_number} users)")
 
-            if (i + 1) % milestone == 0 or (i + 1) == user_number:
-                pct = ((i + 1) / user_number) * 100
-                logger.info(f"EPR progress: {pct:.0f}% ({i+1}/{user_number} users)")
+        self.users_list = [results[i] for i in range(user_number)]
 
         # ---------------------------------------------------------------
         # Post-run: replace users with empty user_history
@@ -291,7 +430,7 @@ class Simulation:
                         a_param=a_param,
                         b_param=b_param,
                         grid=grid_exists,
-                        simulation=self,
+                        simulation=sim_stub,
                         initial_position=init_pos,
                     )
                     while replacement.clock < time:
@@ -410,20 +549,53 @@ class Simulation:
             f"→ target={time_target}, algorithm='{algorithm}'"
         )
 
+        # Detach every user from the live Simulation *before* any parallel
+        # dispatch below: user.simulation only needs to expose .ro/.gamma
+        # (see _SimParamsStub), and keeping the real Simulation reference
+        # would drag the whole users_list -- and therefore every other
+        # user -- through pickle for each individual task.
+        sim_stub = _SimParamsStub(
+            ro, gamma,
+            getattr(self, "grid_cell_lenght", None),
+            getattr(self, "grid_cell_number", None),
+        )
+        for user in self.users_list:
+            user.simulation = sim_stub
+
+        n_workers = _default_n_workers(n_users)
+        base_seed = int(np.random.SeedSequence().entropy % (2**31))
+
         if not is_cf:
             # ---------------------------------------------------------------
-            # Pure EPR resume
+            # Pure EPR resume, parallel across users (each user only ever
+            # touches its own history/grid, so this is safe).
             # ---------------------------------------------------------------
-            for i, user in enumerate(self.users_list):
-                while user.clock < time_target: #for each user the clock is different and is the same as the last one in user_history.
-                    user.make_decision()
-                if (i + 1) % milestone == 0 or (i + 1) == n_users:
-                    pct = ((i + 1) / n_users) * 100
-                    logger.info(f"Resume EPR progress: {pct:.0f}% ({i+1}/{n_users} users)")
+            tasks = [
+                (self.users_list[i], time_target, (base_seed + i) % (2**32 - 1))
+                for i in range(n_users)
+            ]
+            results = {}
+            completed = 0
+            with concurrent.futures.ProcessPoolExecutor(max_workers=n_workers) as executor:
+                futures = {executor.submit(_resume_epr_one_user, t): i for i, t in enumerate(tasks)}
+                for future in concurrent.futures.as_completed(futures):
+                    idx = futures[future]
+                    results[idx] = future.result()
+                    completed += 1
+                    if completed % milestone == 0 or completed == n_users:
+                        pct = (completed / n_users) * 100
+                        logger.info(f"Resume EPR progress: {pct:.0f}% ({completed}/{n_users} users)")
+            self.users_list = [results[i] for i in range(n_users)]
 
         else:
             # ---------------------------------------------------------------
-            # CF resume: run collaborative filtering for the full resume window
+            # CF resume: run collaborative filtering for the full resume window.
+            # Similarities are rebuilt once per interval (a natural, unavoidable
+            # sync point since they depend on the whole population); within an
+            # interval every user advances independently and in parallel
+            # against a frozen, read-only neighbor snapshot. The pool is
+            # created once and reused across all intervals to avoid repeatedly
+            # paying process-startup cost.
             # ---------------------------------------------------------------
             cf_updates   = 4
             n_intervals  = cf_updates + 1
@@ -436,37 +608,50 @@ class Simulation:
             batch_ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
             self._batch_ts = batch_ts   # store so save_raw_data / run_analysis can reuse it
 
-            for interval in range(n_intervals):
-                t_end = resume_start + (interval + 1) * interval_len
-                logger.info(
-                    f"Resume CF interval {interval + 1}/{n_intervals}: "
-                    f"rebuilding similarities, running to {t_end:.1f}..."
-                )
+            with concurrent.futures.ProcessPoolExecutor(max_workers=n_workers) as executor:
+                for interval in range(n_intervals):
+                    t_end = resume_start + (interval + 1) * interval_len
+                    logger.info(
+                        f"Resume CF interval {interval + 1}/{n_intervals}: "
+                        f"rebuilding similarities, running to {t_end:.1f}..."
+                    )
 
-                # Freeze venue_history for all users at the start of this
-                # interval so that build_cf_data sees a symmetric snapshot:
-                # every user is represented by the same temporal baseline,
-                # regardless of the order in which they will be simulated.
-                frozen_users = [
-                    _VenueSnapshot(user.venue_history)
-                    for user in self.users_list
-                ]
+                    # Freeze venue_history for all users at the start of this
+                    # interval so that build_cf_data sees a symmetric snapshot:
+                    # every user is represented by the same temporal baseline,
+                    # regardless of the order in which they will be simulated.
+                    frozen_users = [
+                        _VenueSnapshot(user.venue_history)
+                        for user in self.users_list
+                    ]
 
-                cf_neighbors, check_run_dir = model.utils_cf.build_cf_data(
-                    users_list     = frozen_users,
-                    top_k          = top_k,
-                    cf_type        = algorithm,
-                    simulate_params= self._simulate_params,
-                    grid_exists    = self.grid_exists,
-                    grid_params    = getattr(self, "_grid_params", None),
-                    check_run_dir  = check_run_dir,
-                    interval_idx   = interval,
-                    batch_ts       = batch_ts,
-                )
-                for i, user in enumerate(self.users_list):
-                    neighbors = cf_neighbors[i]
-                    while user.clock < t_end:
-                        user.make_decision_cf(neighbors, algorithm)
+                    cf_neighbors, check_run_dir = model.utils_cf.build_cf_data(
+                        users_list     = frozen_users,
+                        top_k          = top_k,
+                        cf_type        = algorithm,
+                        simulate_params= self._simulate_params,
+                        grid_exists    = self.grid_exists,
+                        grid_params    = getattr(self, "_grid_params", None),
+                        check_run_dir  = check_run_dir,
+                        interval_idx   = interval,
+                        batch_ts       = batch_ts,
+                    )
+
+                    tasks = [
+                        (self.users_list[i], cf_neighbors[i], algorithm, t_end,
+                         (base_seed + interval * n_users + i) % (2**32 - 1))
+                        for i in range(n_users)
+                    ]
+                    results = {}
+                    futures = {executor.submit(_resume_cf_one_user, t): i for i, t in enumerate(tasks)}
+                    for future in concurrent.futures.as_completed(futures):
+                        idx = futures[future]
+                        results[idx] = future.result()
+                    self.users_list = [results[i] for i in range(n_users)]
+                    logger.info(
+                        f"Resume CF interval {interval + 1}/{n_intervals}: done "
+                        f"({n_users}/{n_users} users)"
+                    )
 
         for user in self.users_list:
             header    = user.user_history[0]
@@ -1006,11 +1191,21 @@ class Simulation:
                 (None, analysis_folder),
             ]
 
-        # Collect full DataFrames for Gini / batch-stats (always computed on "mixed" / full data)
+        # ------------------------------------------------------------------
+        # Pass 1 (sequential, cheap): extract plain DataFrames from whatever
+        # form each user is currently in (live User, dict, or tuple loaded
+        # from raw_data) and resolve grid_df. This is just attribute/column
+        # access, not the bottleneck. user_history_df_list / venue_history_df_list
+        # are also kept around afterwards for the "mixed"-variant Gini /
+        # batch-stats computation, so we don't need to re-read them from disk.
+        # ------------------------------------------------------------------
+        alg_key     = analyse_params.get("algorithm", getattr(self, "_simulate_params", {}).get("algorithm", "ce"))
+        grid_active = alg_key != "ce"
+
         user_history_df_list  = []
         venue_history_df_list = []
+        grid_df_list           = []
 
-        # We iterate users once, build both variants in the same pass.
         for i, user_entry in enumerate(self.users_list):
             if isinstance(user_entry, model.user.User):
                 user_history_df  = pd.DataFrame(
@@ -1026,70 +1221,44 @@ class Simulation:
             user_history_df_list.append(user_history_df)
             venue_history_df_list.append(venue_history_df)
 
-            # Resolve grid_df once (shared across variants)
             grid_df = None
-            alg_key = analyse_params.get("algorithm", getattr(self, "_simulate_params", {}).get("algorithm", "ce"))
-            if alg_key != "ce":
+            if grid_active:
                 if isinstance(user_entry, model.user.User) and user_entry.has_grid:
                     grid_df = pd.DataFrame(user_entry.grid.matrix)
                 elif isinstance(user_entry, dict) and user_entry.get("grid") is not None:
                     grid_df = user_entry["grid"]
                 if grid_df is not None:
                     grid_df.columns = grid_df.columns.astype(str)
+            grid_df_list.append(grid_df)
 
-            for _variant, _folder in _variant_folders:
-                # For "pure" variant: trim history to rows after the loaded phase clock
-                if _variant == "pure":
-                    uh = user_history_df[user_history_df["Clock"] > _pure_t_start].copy()
-                    # Rebuild venue_history counting only visits that appear in the pure window
-                    pure_venues = uh["Destination"].dropna().unique()
-                    vh = venue_history_df[venue_history_df.iloc[:, 0].isin(pure_venues)].copy()
-                else:
-                    uh = user_history_df
-                    vh = venue_history_df
+        # ------------------------------------------------------------------
+        # Pass 2 (parallel): the actual analysis. compute_stats calls
+        # compute_real_entropy, an O(n^2) pure-Python loop over the
+        # trajectory -- this single function is what dominates analysis
+        # wall-clock time. Every user's computation is fully independent
+        # of every other user's, so this scales close to linearly with the
+        # number of CPU cores. Workers only receive plain DataFrames (never
+        # a live User or the Simulation) and write their own parquet files
+        # directly, so nothing heavy needs to travel back through pickle.
+        # ------------------------------------------------------------------
+        n_workers = _default_n_workers(total)
+        logger.info(f"Running analysis for {total} users using {n_workers} worker process(es)...")
 
-                stats_df        = model.utils.compute_stats(uh, vh)
-                rg_over_time_df = model.utils.compute_rg_over_time(uh)
-                s_over_time_df  = model.utils.compute_s_over_time(uh)
+        tasks = [
+            (i, user_history_df_list[i], venue_history_df_list[i], grid_df_list[i],
+             _variant_folders, _pure_t_start if combined else None)
+            for i in range(total)
+        ]
 
-                dist_col  = uh["Distance"].dropna()
-                dist_col  = dist_col[dist_col > 0]
-                mean_dist = float(dist_col.mean()) if len(dist_col) > 0 else 0.0
-                num_venues = int(len(vh))
-
-                extra_rows = pd.DataFrame([
-                    {"metric": "mean_travel_distance", "value": mean_dist},
-                    {"metric": "num_venues",            "value": float(num_venues)},
-                ])
-                stats_df = pd.concat([stats_df, extra_rows], ignore_index=True)
-
-                # Merge rg_over_time and s_over_time into user_history as extra columns.
-                # rg_over_time has one row per step (same index as uh); s_over_time has
-                # one row per exploration event only (rows where State(E/R) == "E").
-                # We align both on the Clock value so NaN fills non-exploration rows for 's'.
-                uh = uh.copy()
-                # rg column: one value per history row (same length as uh)
-                uh["rg"] = rg_over_time_df["rg"].values
-
-                # s column: only present for exploration rows — merge on clock, then
-                # forward-fill so return rows carry the last known s value instead of NaN
-                s_map = dict(zip(s_over_time_df["clock"].values, s_over_time_df["s"].values))
-                uh["s"] = uh["Clock"].map(s_map).ffill()
-
-                uh.to_parquet(
-                    os.path.join(_folder, f"user_{i}_history.parquet"),      index=False)
-                vh.to_parquet(
-                    os.path.join(_folder, f"user_{i}_venue.parquet"),        index=False)
-                stats_df.to_parquet(
-                    os.path.join(_folder, f"user_{i}_stats.parquet"),        index=False)
-
-                if grid_df is not None:
-                    grid_df.to_parquet(
-                        os.path.join(_folder, f"user_{i}_grid.parquet"), index=False)
-
-            if (i + 1) % milestone == 0 or (i + 1) == total:
-                pct = ((i + 1) / total) * 100
-                logger.info(f"Analysis progress: {pct:.0f}% ({i+1}/{total} users)")
+        completed = 0
+        with concurrent.futures.ProcessPoolExecutor(max_workers=n_workers) as executor:
+            futures = {executor.submit(_analyze_one_user, t): t[0] for t in tasks}
+            for future in concurrent.futures.as_completed(futures):
+                future.result()  # re-raises any worker exception in the main process
+                completed += 1
+                if completed % milestone == 0 or completed == total:
+                    pct = (completed / total) * 100
+                    logger.info(f"Analysis progress: {pct:.0f}% ({completed}/{total} users)")
 
         # ------------------------------------------------------------------
         # Batch-level summary stats and aggregate grids.
