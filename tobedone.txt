@@ -33,3 +33,4 @@ Aggiornamento:
     perché i topk non sono sempre venues)
 5. Separare i dati in dati completi (E+R) in dati solo esplorativi (E) e vedere statistiche e grafici solo lì
 6. Implementare un EPR che abbia un timestep fisso e non powerlaw
+7. Aggiungere un sistema più ordinato di salvataggio plots

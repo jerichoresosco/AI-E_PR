@@ -452,6 +452,82 @@ def compute_uncorrelated_entropy_frequentist(venue_history_df):
     return float(-np.sum(probs * np.log2(probs)))
 
 
+class _SuffixAutomaton:
+    """
+    Online (incremental) suffix automaton over a sequence of arbitrary
+    hashable symbols (here: small integer venue codes).
+
+    Standard Blumer/Ukkonen-style online construction, generalized from
+    single characters to arbitrary tokens via dict-based transition
+    tables instead of fixed-size arrays. Used only by
+    compute_real_entropy() below to replace its previous O(n^2)
+    pure-Python double loop.
+
+    Supports two operations, both O(1) amortized per symbol:
+      - extend(c): append one symbol to the text represented so far.
+      - match_length(sequence, start): the length of the longest prefix
+        of sequence[start:] that occurs *anywhere* as a substring of the
+        text inserted into the automaton so far (without modifying the
+        automaton -- a pure lookahead).
+    """
+    __slots__ = ("length", "link", "next", "last")
+
+    def __init__(self):
+        # Parallel lists rather than a list of per-state objects: this
+        # keeps the hot loop down to list/dict indexing, no attribute
+        # lookups, which matters since extend()/match_length() run once
+        # per trajectory step.
+        self.length = [0]
+        self.link   = [-1]
+        self.next   = [{}]
+        self.last   = 0
+
+    def extend(self, c):
+        length, link, nxt = self.length, self.link, self.next
+        cur = len(length)
+        length.append(length[self.last] + 1)
+        link.append(-1)
+        nxt.append({})
+
+        p = self.last
+        while p != -1 and c not in nxt[p]:
+            nxt[p][c] = cur
+            p = link[p]
+
+        if p == -1:
+            link[cur] = 0
+        else:
+            q = nxt[p][c]
+            if length[p] + 1 == length[q]:
+                link[cur] = q
+            else:
+                clone = len(length)
+                length.append(length[p] + 1)
+                link.append(link[q])
+                nxt.append(dict(nxt[q]))
+                while p != -1 and nxt[p].get(c) == q:
+                    nxt[p][c] = clone
+                    p = link[p]
+                link[q] = clone
+                link[cur] = clone
+        self.last = cur
+
+    def match_length(self, sequence, start):
+        nxt = self.next
+        state = 0
+        length = 0
+        n = len(sequence)
+        j = start
+        while j < n:
+            nxt_state = nxt[state].get(sequence[j])
+            if nxt_state is None:
+                break
+            state = nxt_state
+            length += 1
+            j += 1
+        return length
+
+
 def compute_real_entropy(user_history_df):
     """
     Estimate the real (actual) entropy S via the Lempel-Ziv compression estimator
@@ -479,32 +555,41 @@ def compute_real_entropy(user_history_df):
 
     Notes
     -----
-    Complexity O(n^2)
+    Each Lambda_i is found by walking a suffix automaton built
+    incrementally over sequence[0:i] -- this returns exactly the same
+    Lambda_i as the textbook double loop (verified against it on random,
+    all-distinct, all-identical, repeating and Zipf-distributed inputs),
+    just without re-scanning the whole past for every candidate length.
+
+    Complexity is O(n) to build the automaton plus O(sum_i Lambda_i) for
+    the lookahead walks. For stationary ergodic sources -- the regime
+    this estimator is statistically meant for -- Lambda_i ~ log(i), so
+    this comes out to O(n log n) in practice. The only case that still
+    degrades towards O(n^2) is a literally degenerate trajectory (e.g.
+    a user sitting at a single venue forever, never exploring again);
+    that case has S^est dominated by a single component anyway, and a
+    handful of such users won't noticeably affect a population's
+    wall-clock time the way every user being O(n^2) used to.
     """
     sequence = user_history_df["Destination"].values
     n = len(sequence)
     if n < 2:
         return 0.0
 
-    lambdas = []
-    for i in range(1, n):
-        length = 1
-        # Search for the shortest new substring starting at i
-        while i + length <= n:
-            candidate = tuple(sequence[i: i + length])
-            found = False
-            # Scan all starting positions strictly before i
-            for start in range(i - length + 1):
-                if start + length <= i:
-                    if tuple(sequence[start: start + length]) == candidate:
-                        found = True
-                        break
-            if not found:
-                break
-            length += 1
-        lambdas.append(length)
+    # Map venue names to small ints once -- automaton transitions then
+    # key off plain ints/hashables, which is faster than re-hashing
+    # numpy string objects on every comparison.
+    codes, _ = pd.factorize(sequence)
 
-    mean_lambda = float(np.mean(lambdas))
+    sam = _SuffixAutomaton()
+    sam.extend(codes[0])
+
+    lambdas = np.empty(n - 1, dtype=np.int64)
+    for idx, i in enumerate(range(1, n)):
+        lambdas[idx] = sam.match_length(codes, i) + 1
+        sam.extend(codes[i])
+
+    mean_lambda = float(lambdas.mean())
     if mean_lambda == 0:
         return 0.0
     return float((1.0 / mean_lambda) * np.log(n))  # natural log, as in the paper

@@ -18,7 +18,7 @@ def main():
     # Choose mode
     # ==========================================================
 
-    mode = "mp"  # Options (short aliases):
+    mode = "lsa"  # Options (short aliases):
                         #   "s"     run simulation, save raw_data only
                         #   "a"    - load raw_data, compute & save analysis_data
                         #   "sa"   - simulate then analyse without reloading from disk
@@ -37,8 +37,8 @@ def main():
         "gamma": 0.2,
         "a_param": 0.75,
         "b_param": 0.6,
-        "user_number": 1,
-        "time": 3000,
+        "user_number": 5000,
+        "time": 50000,
         "starting_position": "random",   # "centered" | "random" | "normal"
         "algorithm": "ge",               # "ce" = classic EPR (no grid)
                                          # "ge" = grid EPR
@@ -108,7 +108,7 @@ def main():
         "gamma": 0.2,
         "a_param": 0.75,
         "b_param": 0.6,
-        "time": 30000,            # time of the ORIGINAL simulation to load
+        "time": 50000,            # time of the ORIGINAL simulation to load
         "starting_position": "random",
         "algorithm": "ge",               # must match the original run's algorithm
         # "batch_id": "20240601_153012_004321",  # omit to use the most recent batch
@@ -129,8 +129,8 @@ def main():
         "gamma": 0.2,
         "a_param": 0.75,
         "b_param": 0.6,
-        "time": 130000,            # absolute target: users will run until clock=time
-        "algorithm": "bv",        # algorithm for the resume phase
+        "time": 300000,            # absolute target: users will run until clock=time
+        "algorithm": "mf",        # algorithm for the resume phase
         "top_k": 40,              # neighbors used when algorithm is uk/ik/mf
     }
 
