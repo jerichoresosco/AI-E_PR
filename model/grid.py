@@ -56,6 +56,36 @@ class Grid:
         return (cx, cy)
 
     @staticmethod
+    def position_to_cell_coords_static(position, cell_lenght, cell_number):
+        """
+        Map a Cartesian position to its (cell_x, cell_y) grid indices,
+        clipped to valid bounds, without needing a Grid instance.
+
+        Used by Simulation to build the global d-EPR weight histogram from
+        a list of raw initial positions, before any per-user Grid exists.
+
+        Parameters
+        ----------
+        position : tuple of float
+            (x, y) Cartesian coordinates.
+        cell_lenght : int
+            Side length of each square cell.
+        cell_number : int
+            Number of cells per side.
+
+        Returns
+        -------
+        tuple of int
+            (cell_x, cell_y) indices, clipped to [0, cell_number - 1].
+        """
+        spatial_center = (cell_lenght * cell_number) / 2
+        cell_x = int((position[0] + spatial_center) // cell_lenght)
+        cell_y = int((position[1] + spatial_center) // cell_lenght)
+        cell_x = max(0, min(cell_x, cell_number - 1))
+        cell_y = max(0, min(cell_y, cell_number - 1))
+        return cell_x, cell_y
+
+    @staticmethod
     def snap_to_centroid_static(position, cell_lenght, cell_number):
         spatial_center = (cell_lenght * cell_number) / 2
         cell_x = int((position[0] + spatial_center) // cell_lenght)
