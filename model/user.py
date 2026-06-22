@@ -68,6 +68,12 @@ class User:
         Mapping from venue names to their row index inside venue_history.
     _row_index : int or None
         Cached row index for updating venue visit counts.
+    d_weights : np.ndarray or None
+        Global, shared d-EPR attractiveness matrix (shape (cell_number,
+        cell_number)), identical across every user in the simulation. When
+        not None, exploration uses the gravity-model choice implemented in
+        _gravity_exploration_venue() instead of spatial power-law sampling.
+        None for "ce"/"ge" (classic/grid EPR).
 
     Methods
     -------
@@ -94,6 +100,10 @@ class User:
         returns its coordinates.
     get_exploration_venue()
         Generates a new exploration destination using spatial power-law sampling.
+    _gravity_exploration_venue()
+        d-EPR variant of get_exploration_venue(): chooses the next venue among
+        all unvisited cells using a gravity-model probability law instead of
+        spatial power-law sampling. Used when d_weights is not None.
     first_exploration()
         Performs the mandatory initial exploration movement and initializes histories.
     update_histories()
@@ -103,7 +113,7 @@ class User:
         storing results in the stats table.
     """
     
-    def __init__(self, uid, a_param, b_param, simulation, grid=False, initial_position=None):
+    def __init__(self, uid, a_param, b_param, simulation, grid=False, initial_position=None, d_weights=None):
         """
         Initializes a new User instance, sets default attributes, internal indices,
         initial position, and immediately performs the first mandatory exploration step.
@@ -124,6 +134,11 @@ class User:
             (x, y) Cartesian starting coordinates.  When None (default) the
             origin (0, 0) is used.  When provided the user's first venue and
             the grid cell counter are initialised at this position instead.
+        d_weights : np.ndarray or None, optional
+            Global, shared d-EPR attractiveness matrix (shape (cell_number,
+            cell_number)). When provided, exploration uses the d-EPR
+            gravity-model choice instead of spatial power-law sampling
+            (requires grid to be active). Default None (classic/grid EPR).
 
         Notes
         -----
@@ -157,6 +172,12 @@ class User:
                 cell_number=simulation.grid_cell_number,
                 initial_position=_start if initial_position is not None else None
             )
+
+        # d-EPR support: when a global weight matrix is supplied, exploration
+        # switches from spatial power-law sampling to a gravity-model choice
+        # among all unvisited cells (see get_exploration_venue() /
+        # _gravity_exploration_venue()).
+        self.d_weights = d_weights
 
         _first_venue_name = self._position_to_cell_name(_start) if self.has_grid else "Venue_1"
 
@@ -328,10 +349,15 @@ class User:
     
     def get_exploration_venue(self):
         """
-        Generates a new exploration destination using spatial power-law sampling.
+        Generates a new exploration destination.
 
-        If a grid is active (has_grid=True), samples candidate positions until one
-        falls in an unvisited cell. The actual destination is then snapped to the
+        If d_weights is set (d-EPR), delegates to _gravity_exploration_venue(),
+        which picks the next venue among all unvisited cells using a
+        gravity-model probability law instead of spatial power-law sampling.
+
+        Otherwise, if a grid is active (has_grid=True), samples candidate
+        positions using spatial power-law sampling until one falls in an
+        unvisited cell. The actual destination is then snapped to the
         centroid of that cell, and delta_r and angle are recomputed accordingly so
         that they remain consistent with the snapped position. The angle is always
         returned in [0, 2*pi].
@@ -342,7 +368,9 @@ class User:
         tuple of float
             (x, y) Cartesian coordinates of the chosen exploration destination.
         """
-        if self.has_grid:
+        if self.d_weights is not None:
+            next_position = self._gravity_exploration_venue()
+        elif self.has_grid:
             saturation = 0
             while True:
                 self.delta_r = model.utils.spatial_power_law_sampling(par=self.a_param).item()
@@ -367,6 +395,81 @@ class User:
             self.delta_r = model.utils.spatial_power_law_sampling(par=self.a_param).item()
             self.angle = np.random.uniform(0, 2 * np.pi)
             next_position = model.utils.polar_to_cartesian(self.delta_r, self.angle, position=self.position)
+        return next_position
+
+    def _gravity_exploration_venue(self):
+        """
+        d-EPR exploration: gravity-model choice among every unvisited cell.
+
+        Selects the next venue using a gravity-model probability law:
+
+            p_ij = (1/Norm) * d_i * d_j / r_ij^2
+
+        where i is the cell the user currently occupies, j ranges over
+        *every* unvisited cell of the grid (exhaustive search, no radius
+        cutoff), d_i / d_j are the global attractiveness weights shared by
+        all users (self.d_weights), r_ij is the Euclidean distance between
+        the centroids of i and j, and Norm makes the probabilities over all
+        candidate j sum to 1.
+
+        Because d_i is identical for every candidate j (the user only ever
+        leaves from its current cell), it cancels out under normalisation;
+        this implementation uses the algebraically-reduced form d_j / r_ij^2
+        directly. This yields exactly the same probabilities as the full
+        formula and avoids a spurious 0/0 when d_i happens to be zero.
+
+        Returns
+        -------
+        tuple of float
+            (x, y) Cartesian coordinates of the chosen venue, snapped to the
+            centroid of the selected cell.
+
+        Raises
+        ------
+        RuntimeError
+            If every cell in the grid has already been visited.
+        """
+        matrix = self.grid.matrix
+        unvisited = np.argwhere(matrix == 0)
+
+        if unvisited.size == 0:
+            raise RuntimeError(
+                f"User {self.uid}: no unvisited cells left in the grid (d-EPR). "
+                f"Check grid size relative to simulation time/user density."
+            )
+
+        cell_x = unvisited[:, 0]
+        cell_y = unvisited[:, 1]
+        cl = self.grid.cell_lenght
+        sc = self.grid.spatial_center
+        centroid_x = (cell_x + 0.5) * cl - sc
+        centroid_y = (cell_y + 0.5) * cl - sc
+
+        dx = centroid_x - self.position[0]
+        dy = centroid_y - self.position[1]
+        r_sq = dx ** 2 + dy ** 2
+
+        d_j = self.d_weights[cell_x, cell_y]
+        weights = d_j / r_sq
+        total = weights.sum()
+
+        if total <= 0:
+            logger.warning(
+                f"User {self.uid}: all candidate cells have zero d-EPR weight — "
+                f"falling back to a uniform choice among unvisited cells."
+            )
+            probs = np.full(len(unvisited), 1.0 / len(unvisited))
+        else:
+            probs = weights / total
+
+        choice_idx = np.random.choice(len(unvisited), p=probs)
+        next_position = (float(centroid_x[choice_idx]), float(centroid_y[choice_idx]))
+
+        sel_dx = next_position[0] - self.position[0]
+        sel_dy = next_position[1] - self.position[1]
+        self.delta_r = float(np.sqrt(sel_dx ** 2 + sel_dy ** 2))
+        self.angle = float(np.arctan2(sel_dy, sel_dx) % (2 * np.pi))
+
         return next_position
     
     def first_exploration(self):

@@ -54,6 +54,74 @@ def _default_n_workers(n_tasks=None):
     return max(1, n_cpu)
 
 
+def _compute_d_weights(starting_position, cell_lenght, cell_number, spatial_center, user_number, seed):
+    """
+    Build the global, shared d-EPR attractiveness matrix d_i.
+
+    The weight-assignment logic mirrors the initial spatial distribution of
+    users, with one exception:
+      - "centered": every user starts at the very same point, which is not
+        a real spatial distribution, so all cells get a constant/uniform
+        weight instead of a degenerate single-cell histogram.
+      - "random" / "normal": d_i is proportional to the number of users
+        whose starting position falls in cell i -- i.e. the histogram of
+        the population's initial placement.
+
+    Parameters
+    ----------
+    starting_position : str
+        "centered", "random", or "normal".
+    cell_lenght, cell_number : int
+        Grid geometry.
+    spatial_center : float or None
+        Half-extent of the grid, used to sample "random"/"normal" positions.
+        Not used when starting_position == "centered".
+    user_number : int
+        Number of users (needed to build the histogram for "random"/"normal").
+    seed : int
+        RNG seed for reproducibility, independent of the per-user seeds used
+        later to actually run each user.
+
+    Returns
+    -------
+    d_weights : np.ndarray of shape (cell_number, cell_number)
+        The global attractiveness matrix.
+    precomputed_positions : list of tuple or None
+        Initial positions to be reused verbatim by each user task so that
+        the histogram and the actual starting cells stay consistent.
+        None when starting_position == "centered" (every user already
+        deterministically starts at the central cell, nothing to precompute).
+    """
+    if starting_position == "centered":
+        return np.ones((cell_number, cell_number), dtype=float), None
+
+    rng = np.random.default_rng(seed)
+    sc = spatial_center
+
+    positions = []
+    if starting_position == "random":
+        for _ in range(user_number):
+            positions.append((float(rng.uniform(-sc, sc)), float(rng.uniform(-sc, sc))))
+    elif starting_position == "normal":
+        sigma = sc / 3
+        def _sample():
+            while True:
+                v = rng.normal(0, sigma)
+                if -sc <= v <= sc:
+                    return float(v)
+        for _ in range(user_number):
+            positions.append((_sample(), _sample()))
+    else:
+        raise ValueError(f"_compute_d_weights: unknown starting_position '{starting_position}'")
+
+    d_weights = np.zeros((cell_number, cell_number), dtype=float)
+    for pos in positions:
+        cx, cy = model.grid.Grid.position_to_cell_coords_static(pos, cell_lenght, cell_number)
+        d_weights[cx, cy] += 1.0
+
+    return d_weights, positions
+
+
 class _SimParamsStub:
     """
     Lightweight, picklable stand-in for a Simulation instance.
@@ -79,11 +147,17 @@ def _simulate_one_user(task):
     Receives only plain data + a picklable sim_stub, never a live Simulation.
     """
     (uid_idx, a_param, b_param, grid_exists, sim_stub,
-     starting_position, spatial_center, time_target, seed) = task
+     starting_position, spatial_center, time_target, seed,
+     d_weights, precomputed_init_pos) = task
 
     np.random.seed(seed)
 
-    if starting_position == "random":
+    if precomputed_init_pos is not None:
+        # Position fixed ahead of time by run() so that it matches the
+        # histogram used to build d_weights (d-EPR, starting_position
+        # "random"/"normal"). Do not resample.
+        init_pos = precomputed_init_pos
+    elif starting_position == "random":
         sc = spatial_center
         init_pos = (np.random.uniform(-sc, sc), np.random.uniform(-sc, sc))
     elif starting_position == "normal":
@@ -105,6 +179,7 @@ def _simulate_one_user(task):
         grid=grid_exists,
         simulation=sim_stub,
         initial_position=init_pos,
+        d_weights=d_weights,
     )
     while user.clock < time_target:
         user.make_decision()
@@ -191,7 +266,7 @@ class Simulation:
 
     Each phase is self-contained and receives only the parameters it needs:
         run(simulate_params, grid_params)   requires ro, gamma, a_param, b_param, user_number, time,
-                                            algorithm ("ce"|"ge"|"uk"|"ik"|"mf")
+                                            algorithm ("ce"|"ge"|"de"|"uk"|"ik"|"mf")
                                             optional: top_k (default 10, used for uk/ik/mf)
                                             grid_params required when algorithm != "ce": cell_lenght, cell_number
         run_analysis(analyse_params, grid_params)
@@ -255,6 +330,10 @@ class Simulation:
         self.ro    = None
         self.gamma = None
 
+        # d-EPR: global, shared attractiveness matrix built during run()
+        # (algorithm == "de"); None for every other algorithm.
+        self.d_weights = None
+
         # Stored after run() for save_raw_data() folder naming
         self._simulate_params = None
 
@@ -283,9 +362,13 @@ class Simulation:
             Must contain: "algorithm" -- one of:
               "ce"  : classic EPR (no grid)
               "ge"  : grid EPR
+              "de"  : d-EPR -- same as "ge" except exploration picks the next
+                      venue via a gravity-model probability law over a global,
+                      shared cell-attractiveness matrix (see _compute_d_weights
+                      and User._gravity_exploration_venue).
             CF algorithms ("uk", "ik", "mf", "ba", "bv", "ra") raise ValueError here.
         grid_params : dict, optional
-            Required when algorithm is "ge". Must contain "cell_lenght" and
+            Required when algorithm is "ge" or "de". Must contain "cell_lenght" and
             "cell_number".
         """
         ro           = simulate_params["ro"]
@@ -298,18 +381,18 @@ class Simulation:
         starting_position = simulate_params["starting_position"]
         top_k        = simulate_params.get("top_k", 10)
 
-        _VALID_ALGORITHMS = ("ce", "ge", "uk", "ik", "mf", "ba", "bv", "ra")
+        _VALID_ALGORITHMS = ("ce", "ge", "de", "uk", "ik", "mf", "ba", "bv", "ra")
         if algorithm not in _VALID_ALGORITHMS:
             raise ValueError(
                 f"run(): unknown algorithm '{algorithm}'. "
                 f"Must be one of: {_VALID_ALGORITHMS}"
             )
 
-        if algorithm not in ("ce", "ge"):
+        if algorithm not in ("ce", "ge", "de"):
             raise ValueError(
                 f"run(): algorithm='{algorithm}' is a CF algorithm and cannot be used "
                 f"to start a simulation from scratch. "
-                f"Use 'ce' or 'ge' for run(), then load the saved batch and call "
+                f"Use 'ce', 'ge' or 'de' for run(), then load the saved batch and call "
                 f"resume() with algorithm='{algorithm}'."
             )
 
@@ -371,10 +454,39 @@ class Simulation:
         spatial_center = getattr(self, "_spatial_center", None)
         base_seed = int(np.random.SeedSequence().entropy % (2**31))
 
+        # ---------------------------------------------------------------
+        # d-EPR: precompute the global, shared attractiveness matrix d_i.
+        # Must happen before dispatching tasks so every worker receives the
+        # same matrix, and (for "random"/"normal") so each user's initial
+        # position is fixed centrally and matches the histogram used to
+        # build the weights -- workers no longer resample it themselves.
+        # ---------------------------------------------------------------
+        precomputed_positions = None
+        if algorithm == "de":
+            weight_seed = int(np.random.SeedSequence().entropy % (2**31))
+            self.d_weights, precomputed_positions = _compute_d_weights(
+                starting_position=self._starting_position,
+                cell_lenght=self.grid_cell_lenght,
+                cell_number=self.grid_cell_number,
+                spatial_center=spatial_center,
+                user_number=user_number,
+                seed=weight_seed,
+            )
+            logger.info(
+                f"d-EPR: built global weight matrix "
+                f"(starting_position='{self._starting_position}', "
+                f"sum={self.d_weights.sum():.0f}, "
+                f"nonzero_cells={np.count_nonzero(self.d_weights)}/{self.d_weights.size})."
+            )
+        else:
+            self.d_weights = None
+
         tasks = [
             (i, a_param, b_param, grid_exists, sim_stub,
              self._starting_position, spatial_center, time,
-             (base_seed + i) % (2**32 - 1))
+             (base_seed + i) % (2**32 - 1),
+             self.d_weights,
+             precomputed_positions[i] if precomputed_positions is not None else None)
             for i in range(user_number)
         ]
 
@@ -432,6 +544,7 @@ class Simulation:
                         grid=grid_exists,
                         simulation=sim_stub,
                         initial_position=init_pos,
+                        d_weights=self.d_weights,
                     )
                     while replacement.clock < time:
                         replacement.make_decision()
@@ -477,7 +590,7 @@ class Simulation:
         the users already carry (i.e. the end-time of the previous run phase).
 
         The algorithm is taken from simulate_params["algorithm"] and must be
-        one of: "ce", "ge", "uk", "ik", "mf", "ba", "bv", "ra".
+        one of: "ce", "ge", "de", "uk", "ik", "mf", "ba", "bv", "ra".
 
         Parameters
         ----------
@@ -505,7 +618,7 @@ class Simulation:
         algorithm    = simulate_params["algorithm"]
         top_k        = simulate_params.get("top_k", 10)
 
-        is_cf = algorithm not in ("ce", "ge")
+        is_cf = algorithm not in ("ce", "ge", "de")
 
         # grid and starting_position are inherited from the loaded simulation,
         # not taken from simulate_params.
@@ -687,6 +800,8 @@ class Simulation:
         - departure        : Departure field of last row
         - state            : State(E/R) field of last row
         - grid.matrix      : loaded from user_{i}_grid.parquet when grid is active
+        - d_weights        : global, shared d-EPR matrix reloaded from
+                              d_weights.parquet (algorithm="de" only; None otherwise)
         - simulation       : reference to self (re-attached here)
 
         Parameters
@@ -825,6 +940,23 @@ class Simulation:
             self.grid_cell_lenght = grid_params["cell_lenght"]
             self.grid_cell_number = grid_params["cell_number"]
 
+        # ------------------------------------------------------------------
+        # d-EPR: reload the global, shared attractiveness matrix if present
+        # ------------------------------------------------------------------
+        if alg == "de":
+            d_weights_path = os.path.join(run_folder, "d_weights.parquet")
+            if os.path.exists(d_weights_path):
+                self.d_weights = pd.read_parquet(d_weights_path).values.astype(float)
+            else:
+                logger.warning(
+                    f"_reconstruct_users_from_raw(): algorithm='de' but "
+                    f"d_weights.parquet not found in {run_folder} — "
+                    f"reconstructed users will fall back to grid power-law exploration."
+                )
+                self.d_weights = None
+        else:
+            self.d_weights = None
+
         self.users_list = []
         n_users   = len(user_indices)
         milestone = max(1, n_users // 10)
@@ -874,6 +1006,10 @@ class Simulation:
             user.a_param      = load_params["a_param"]
             user.b_param      = load_params["b_param"]
             user.simulation   = self
+
+            # d-EPR: same global, shared matrix reloaded once above for the
+            # whole batch (None for every other algorithm).
+            user.d_weights    = self.d_weights
 
             user.has_grid = grid_exists
             if grid_exists and os.path.exists(g_path):
@@ -944,6 +1080,7 @@ class Simulation:
         raw_data/
             ro_{ro}_gamma_{gamma}_a_{a_param}_b_{b_param}_time_{time}/
                 {YYYYMMDD_HHMMSS_ffffff}/
+                    [d_weights.parquet]    (only for algorithm="de"; one matrix per batch)
                     user_0_history.parquet
                     user_0_venue.parquet
                     [user_0_grid.parquet]   (only when grid is active)
@@ -960,6 +1097,14 @@ class Simulation:
             run_folder = self._make_run_folder("raw_data", self._simulate_params, self._grid_params)
         else:
             run_folder = self._make_run_folder("raw_data", self._simulate_params)
+
+        # d-EPR: persist the global, shared attractiveness matrix once per
+        # batch (not per-user, since it is identical for every user).
+        if getattr(self, "d_weights", None) is not None:
+            dw_df = pd.DataFrame(self.d_weights)
+            dw_df.columns = dw_df.columns.astype(str)
+            dw_df.to_parquet(os.path.join(run_folder, "d_weights.parquet"), index=False)
+
         total     = len(self.users_list)
         milestone = max(1, total // 10)
 
@@ -998,6 +1143,7 @@ class Simulation:
             <base_params>/          ← parameters of the loaded batch (load_params)
                 <resume_params>/    ← parameters of the resumed simulation (_simulate_params)
                     {YYYYMMDD_HHMMSS_ffffff}/
+                        [d_weights.parquet]    (only for algorithm="de")
                         user_0_history.parquet
                         user_0_venue.parquet
                         [user_0_grid.parquet]
@@ -1025,6 +1171,13 @@ class Simulation:
             grid_params   = gp,
             batch_ts      = getattr(self, "_batch_ts", None),
         )
+
+        # d-EPR: persist the global, shared attractiveness matrix once per
+        # batch (carried over unchanged from the loaded simulation).
+        if getattr(self, "d_weights", None) is not None:
+            dw_df = pd.DataFrame(self.d_weights)
+            dw_df.columns = dw_df.columns.astype(str)
+            dw_df.to_parquet(os.path.join(run_folder, "d_weights.parquet"), index=False)
 
         total     = len(self.users_list)
         milestone = max(1, total // 10)

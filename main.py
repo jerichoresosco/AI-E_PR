@@ -18,7 +18,7 @@ def main():
     # Choose mode
     # ==========================================================
 
-    mode = "lsa"  # Options (short aliases):
+    mode = "p"  # Options (short aliases):
                         #   "s"     run simulation, save raw_data only
                         #   "a"    - load raw_data, compute & save analysis_data
                         #   "sa"   - simulate then analyse without reloading from disk
@@ -40,8 +40,9 @@ def main():
         "user_number": 5000,
         "time": 50000,
         "starting_position": "random",   # "centered" | "random" | "normal"
-        "algorithm": "ge",               # "ce" = classic EPR (no grid)
+        "algorithm": "de",               # "ce" = classic EPR (no grid)
                                          # "ge" = grid EPR
+                                         # "de" = d-EPR 
                                          # "uk" = User-KNN CF
                                          # "ik" = Item-KNN CF
                                          # "mf" = Matrix Factorization CF
@@ -84,8 +85,8 @@ def main():
         "gamma": 0.2,
         "a_param": 0.75,
         "b_param": 0.6,
-        "time": 3000,
-        "user_number": 1,       #For correct displaying
+        "time": 50000,
+        "user_number": 5000,       #For correct displaying
         "starting_position": "random",
         "algorithm": "ge",               # must match the simulate_params value used
         #"algorithm": "mf",              # uncomment to target a CF run
@@ -212,8 +213,8 @@ def main():
         #"s_over_time", #mp
         #"rg_over_time", #mp
         #"aggregate_grid",   
-        #"batch_grid",  ##Problems in saving due to max lenght title 260 characters
-        "batch_stats", #mp
+        "batch_grid",  ##Problems in saving due to max lenght title 260 characters
+        #"batch_stats", #mp
         #"srand", #mp     
        # "sunc", #mp      
        # "sreal", #mp     
