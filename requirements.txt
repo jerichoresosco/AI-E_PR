@@ -1,0 +1,8 @@
+# pip install -r requirements.txt   (Python >= 3.11)
+numpy>=2.4
+pandas>=3.0
+scipy>=1.17
+matplotlib>=3.10
+pyarrow>=23
+libpysal>=4.14
+esda>=2.9

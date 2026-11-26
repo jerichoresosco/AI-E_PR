@@ -1,0 +1,25 @@
+# Data: far too large for git
+raw_data/
+analysis_data/
+combined_raw_data/
+combined_analysis_data/
+
+# Outputs, rebuilt by the code
+plots/
+combined_plots/
+multiplots/
+thesis_plot/
+stats_export/
+.cache/
+check/
+
+# Python
+__pycache__/
+*.pyc
+
+# Local files of the author
+*.tar.gz
+*.bundle
+migra_dati.py
+accorcia_nomi.py
+Miniconda3-*.sh
